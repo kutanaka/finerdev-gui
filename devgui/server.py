@@ -1,32 +1,33 @@
-"""FastAPI application: REST + WebSocket skeleton.
+"""FastAPI application: REST + WebSocket, including the operator right.
 
-Per docs/design.md section 14 step 5, this wires up /api/layout,
-/api/call/{widget_id}, and the WebSocket `hello`/`snapshot` handshake.
-Operator-token enforcement (section 9) does not exist yet, so every
-mutating endpoint here is provisionally open to any caller - that check
-is added in a later step.
-
-/api/devices/{name}/open and /close (section 7.2) are included here too,
-since the frontend built in step 6 needs them and they follow directly
-from devgui/runtime/devices.py (step 4); the operator-only *endpoints*
-themselves (/api/operator/...) are still out of scope until steps 8-9.
+Per docs/design.md section 14 step 8, /api/call and /api/devices/{name}/
+open|close now require a valid X-Operator-Token (section 7.2); the
+forced-takeover endpoints (/api/operator/request...) are still out of
+scope until step 9. /api/operator/acquire and /release implement
+sections 9.1-9.3: exactly one operator right for the whole server, freed
+manually, on idle timeout, or when its holder's WebSocket stays
+disconnected past the grace period - not on any device-specific state.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import secrets
+import socket
+import threading
 from concurrent.futures import Future
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from devgui.runtime.bus import BusManager, Priority
 from devgui.runtime.devices import DeviceManager, DeviceNotInstalledError, DeviceRuntime
+from devgui.runtime.operator import InvalidOperatorTokenError, OperatorHeldError, OperatorManager
 from devgui.runtime.poller import Poller
 from devgui.widgets import (
     Button,
@@ -124,8 +125,45 @@ def _invoke_widget(widget: Widget, raw_value: Any) -> Any:
     raise TypeError(f"unsupported widget type {type(widget).__name__}")
 
 
+def _lookup_hostname_background(ip: str, cache: dict[str, str | None]) -> None:
+    # A real daemon thread, not a ThreadPoolExecutor/asyncio.to_thread worker:
+    # socket.gethostbyaddr() has no way to time out, and both the default
+    # executor and the interpreter itself join non-daemon threads at
+    # shutdown, which would hang the whole process behind one slow/dead
+    # reverse-DNS lookup. A daemon thread is simply abandoned on exit.
+    def worker() -> None:
+        try:
+            cache[ip] = socket.gethostbyaddr(ip)[0]
+        except Exception:
+            pass  # cache[ip] stays None (set as a placeholder before spawning)
+
+    threading.Thread(target=worker, daemon=True, name=f"devgui-dns-{ip}").start()
+
+
+def _display_name_for(ip: str, cache: dict[str, str | None]) -> str:
+    """Best-effort "IP, or hostname (IP) once resolved" - never blocks.
+
+    The first call for a given IP returns just the IP and kicks off a
+    background resolution; later calls (e.g. a reconnect) benefit from
+    whatever the cache holds by then. Per design.md section 7.1: the
+    reverse lookup is cached and happens asynchronously with a timeout -
+    here "timeout" means callers are never blocked waiting for it.
+    """
+    if ip not in cache:
+        cache[ip] = None
+        _lookup_hostname_background(ip, cache)
+        return ip
+    hostname = cache[ip]
+    return f"{hostname} ({ip})" if hostname else ip
+
+
 def create_app(
-    layout: list[Category], device_manager: DeviceManager, bus_manager: BusManager
+    layout: list[Category],
+    device_manager: DeviceManager,
+    bus_manager: BusManager,
+    *,
+    operator_idle_timeout: float = 600.0,
+    operator_disconnect_grace: float = 30.0,
 ) -> FastAPI:
     widgets_by_id: dict[str, tuple[Device, Widget]] = {
         widget.id: (device, widget)
@@ -138,6 +176,12 @@ def create_app(
     connections: set[WebSocket] = set()
     connections_lock = asyncio.Lock()
     loop_holder: dict[str, asyncio.AbstractEventLoop] = {}
+    hostname_cache: dict[str, str | None] = {}
+    client_display_names: dict[str, str] = {}
+    operator = OperatorManager(
+        idle_timeout=operator_idle_timeout, disconnect_grace=operator_disconnect_grace
+    )
+    background_tasks: list[asyncio.Task] = []
 
     async def _broadcast(message: dict[str, Any]) -> None:
         async with connections_lock:
@@ -178,13 +222,38 @@ def create_app(
 
     poller = Poller(layout, device_manager, bus_manager, on_entry=_on_display_entry)
 
+    def _broadcast_operator_state() -> None:
+        loop = loop_holder.get("loop")
+        if loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(
+            _broadcast({"type": "operator_state", **operator.snapshot()}), loop
+        )
+
+    def _require_operator(token: str | None) -> None:
+        if not operator.is_holder(token):
+            raise HTTPException(status_code=403, detail="operator right required")
+        operator.touch(token)
+
+    async def _expiry_loop() -> None:
+        while True:
+            await asyncio.sleep(1.0)
+            if operator.check_expiration():
+                _broadcast_operator_state()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         loop_holder["loop"] = asyncio.get_running_loop()
         for name, future in device_manager.auto_open_all():
             _track(name, future)
         poller.start()
+        background_tasks.append(asyncio.create_task(_expiry_loop()))
         yield
+        for task in background_tasks:
+            task.cancel()
+        for task in background_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await poller.stop()
         await asyncio.to_thread(device_manager.close_all_connected)
 
@@ -195,7 +264,12 @@ def create_app(
         return _serialize_layout(layout, device_manager)
 
     @app.post("/api/call/{widget_id}")
-    async def api_call(widget_id: str, body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    async def api_call(
+        widget_id: str,
+        body: dict[str, Any] = Body(default={}),
+        x_operator_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _require_operator(x_operator_token)
         entry = widgets_by_id.get(widget_id)
         if entry is None:
             raise HTTPException(status_code=404, detail=f"unknown widget '{widget_id}'")
@@ -215,7 +289,10 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/devices/{name}/open")
-    async def api_device_open(name: str) -> dict[str, Any]:
+    async def api_device_open(
+        name: str, x_operator_token: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        _require_operator(x_operator_token)
         try:
             runtime = device_manager.get(name)
         except KeyError:
@@ -233,7 +310,10 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/devices/{name}/close")
-    async def api_device_close(name: str) -> dict[str, Any]:
+    async def api_device_close(
+        name: str, x_operator_token: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        _require_operator(x_operator_token)
         try:
             runtime = device_manager.get(name)
         except KeyError:
@@ -250,10 +330,42 @@ def create_app(
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         return {"ok": True}
 
+    @app.post("/api/operator/acquire")
+    async def api_operator_acquire(
+        x_client_id: str | None = Header(default=None),
+        x_operator_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        if x_client_id is None:
+            raise HTTPException(status_code=400, detail="X-Client-Id header is required")
+        display_name = client_display_names.get(x_client_id, x_client_id)
+        try:
+            token = operator.acquire(
+                x_client_id, display_name, presented_token=x_operator_token
+            )
+        except OperatorHeldError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        _broadcast_operator_state()
+        return {"ok": True, "token": token, "display_name": display_name}
+
+    @app.post("/api/operator/release")
+    async def api_operator_release(
+        x_operator_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        if x_operator_token is None:
+            raise HTTPException(status_code=403, detail="X-Operator-Token header is required")
+        try:
+            operator.release(x_operator_token)
+        except InvalidOperatorTokenError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        _broadcast_operator_state()
+        return {"ok": True}
+
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
         client_id = secrets.token_urlsafe(16)
+        client_ip = websocket.client.host if websocket.client else "unknown"
+        client_display_names[client_id] = _display_name_for(client_ip, hostname_cache)
         async with connections_lock:
             connections.add(websocket)
         try:
@@ -266,6 +378,7 @@ def create_app(
                         for name, rt in device_manager.runtimes.items()
                     },
                     "displays": {wid: poller.get_log(wid) for wid in display_ids},
+                    "operator": operator.snapshot(),
                 }
             )
             while True:
@@ -275,6 +388,8 @@ def create_app(
         finally:
             async with connections_lock:
                 connections.discard(websocket)
+            client_display_names.pop(client_id, None)
+            operator.mark_disconnected(client_id)
 
     # Registered last: falls back to serving devgui/static/* (index.html at
     # "/") for anything not matched by the API/WebSocket routes above.

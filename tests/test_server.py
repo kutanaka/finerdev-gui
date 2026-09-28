@@ -62,6 +62,13 @@ def wait_until(predicate, timeout=2.0):
     return predicate()
 
 
+def operator_headers(client, client_id="test-client"):
+    resp = client.post("/api/operator/acquire", headers={"X-Client-Id": client_id})
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["token"]
+    return {"X-Client-Id": client_id, "X-Operator-Token": token}
+
+
 def test_api_layout_structure(harness):
     with TestClient(harness.app) as client:
         resp = client.get("/api/layout")
@@ -85,24 +92,39 @@ def test_api_layout_structure(harness):
         assert placeholder["can_open"] is False
 
 
+def test_api_call_without_operator_token_returns_403(harness):
+    with TestClient(harness.app) as client:
+        resp = client.post("/api/call/PSU1:0", json={})
+        assert resp.status_code == 403
+
+
+def test_api_device_open_without_operator_token_returns_403(harness):
+    with TestClient(harness.app) as client:
+        resp = client.post("/api/devices/PSU1/open")
+        assert resp.status_code == 403
+
+
 def test_api_call_button(harness):
     with TestClient(harness.app) as client:
+        headers = operator_headers(client)
         widget_id = "PSU1:0"
-        resp = client.post(f"/api/call/{widget_id}", json={})
+        resp = client.post(f"/api/call/{widget_id}", json={}, headers=headers)
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
 
 
 def test_api_call_number_input_sets_value(harness):
     with TestClient(harness.app) as client:
-        resp = client.post("/api/call/PSU1:1", json={"value": 3.5})
+        headers = operator_headers(client)
+        resp = client.post("/api/call/PSU1:1", json={"value": 3.5}, headers=headers)
         assert resp.json() == {"ok": True}
         assert harness.psu.value == 3.5
 
 
 def test_api_call_number_input_out_of_range_returns_ok_false(harness):
     with TestClient(harness.app) as client:
-        resp = client.post("/api/call/PSU1:1", json={"value": 100})
+        headers = operator_headers(client)
+        resp = client.post("/api/call/PSU1:1", json={"value": 100}, headers=headers)
         body = resp.json()
         assert body["ok"] is False
         assert "above max" in body["error"]
@@ -110,24 +132,27 @@ def test_api_call_number_input_out_of_range_returns_ok_false(harness):
 
 def test_api_call_select_maps_display_key_to_value(harness):
     with TestClient(harness.app) as client:
-        resp = client.post("/api/call/PSU1:2", json={"value": "High"})
+        headers = operator_headers(client)
+        resp = client.post("/api/call/PSU1:2", json={"value": "High"}, headers=headers)
         assert resp.json() == {"ok": True}
         assert harness.selected == [2]
 
 
 def test_api_call_unknown_widget_404(harness):
     with TestClient(harness.app) as client:
-        resp = client.post("/api/call/does-not-exist", json={})
+        headers = operator_headers(client)
+        resp = client.post("/api/call/does-not-exist", json={}, headers=headers)
         assert resp.status_code == 404
 
 
 def test_api_device_open_close_roundtrip(harness):
     with TestClient(harness.app) as client:
-        resp = client.post("/api/devices/PSU1/open")
+        headers = operator_headers(client)
+        resp = client.post("/api/devices/PSU1/open", headers=headers)
         assert resp.json() == {"ok": True}
         assert wait_until(lambda: harness.device_manager.get("PSU1").state == DeviceState.CONNECTED)
 
-        resp = client.post("/api/devices/PSU1/close")
+        resp = client.post("/api/devices/PSU1/close", headers=headers)
         assert resp.json() == {"ok": True}
         assert wait_until(
             lambda: harness.device_manager.get("PSU1").state == DeviceState.DISCONNECTED
@@ -136,13 +161,15 @@ def test_api_device_open_close_roundtrip(harness):
 
 def test_api_device_open_not_installed_returns_409(harness):
     with TestClient(harness.app) as client:
-        resp = client.post("/api/devices/LOatt3/open")
+        headers = operator_headers(client)
+        resp = client.post("/api/devices/LOatt3/open", headers=headers)
         assert resp.status_code == 409
 
 
 def test_api_device_open_unknown_device_404(harness):
     with TestClient(harness.app) as client:
-        resp = client.post("/api/devices/NoSuchDevice/open")
+        headers = operator_headers(client)
+        resp = client.post("/api/devices/NoSuchDevice/open", headers=headers)
         assert resp.status_code == 404
 
 
@@ -160,6 +187,54 @@ def test_static_index_and_assets_are_served(harness):
         assert style_css.status_code == 200
 
 
+def test_operator_acquire_when_free(harness):
+    with TestClient(harness.app) as client:
+        resp = client.post("/api/operator/acquire", headers={"X-Client-Id": "c1"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["token"]
+        assert body["display_name"]
+
+
+def test_operator_acquire_requires_client_id_header(harness):
+    with TestClient(harness.app) as client:
+        resp = client.post("/api/operator/acquire")
+        assert resp.status_code == 400
+
+
+def test_operator_acquire_when_held_returns_409(harness):
+    with TestClient(harness.app) as client:
+        operator_headers(client, "c1")
+        resp = client.post("/api/operator/acquire", headers={"X-Client-Id": "c2"})
+        assert resp.status_code == 409
+
+
+def test_operator_release_then_someone_else_can_acquire(harness):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client, "c1")
+        resp = client.post("/api/operator/release", headers=headers)
+        assert resp.json() == {"ok": True}
+
+        resp2 = client.post("/api/operator/acquire", headers={"X-Client-Id": "c2"})
+        assert resp2.status_code == 200
+
+
+def test_operator_release_without_token_returns_403(harness):
+    with TestClient(harness.app) as client:
+        resp = client.post("/api/operator/release")
+        assert resp.status_code == 403
+
+
+def test_operator_release_with_wrong_token_returns_403(harness):
+    with TestClient(harness.app) as client:
+        operator_headers(client, "c1")
+        resp = client.post(
+            "/api/operator/release", headers={"X-Operator-Token": "not-the-token"}
+        )
+        assert resp.status_code == 403
+
+
 def test_websocket_hello_and_snapshot(harness):
     with TestClient(harness.app) as client:
         with client.websocket_connect("/ws") as ws:
@@ -172,15 +247,40 @@ def test_websocket_hello_and_snapshot(harness):
             assert snapshot["devices"]["PSU1"]["state"] == "disconnected"
             assert snapshot["devices"]["LOatt3"]["state"] == "not_installed"
             assert snapshot["displays"] == {"PSU1:3": []}
+            assert snapshot["operator"] == {"holder_display_name": None, "is_held": False}
 
 
-def test_websocket_receives_display_entry_after_device_connects(harness):
+def test_websocket_receives_operator_state_broadcast_on_acquire_and_release(harness):
     with TestClient(harness.app) as client:
         with client.websocket_connect("/ws") as ws:
             ws.receive_json()  # hello
             ws.receive_json()  # snapshot
 
-            client.post("/api/devices/PSU1/open")
+            resp = client.post("/api/operator/acquire", headers={"X-Client-Id": "c1"})
+            token = resp.json()["token"]
+
+            acquired = ws.receive_json(mode="text")
+            assert acquired["type"] == "operator_state"
+            assert acquired["is_held"] is True
+            assert acquired["holder_display_name"]
+
+            client.post("/api/operator/release", headers={"X-Operator-Token": token})
+            released = ws.receive_json(mode="text")
+            assert released == {
+                "type": "operator_state",
+                "holder_display_name": None,
+                "is_held": False,
+            }
+
+
+def test_websocket_receives_display_entry_after_device_connects(harness):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()  # hello
+            ws.receive_json()  # snapshot
+
+            client.post("/api/devices/PSU1/open", headers=headers)
             ws.receive_json()  # device_state: connecting
             ws.receive_json()  # device_state: connected
 
@@ -193,11 +293,12 @@ def test_websocket_receives_display_entry_after_device_connects(harness):
 
 def test_websocket_receives_device_state_broadcast_on_manual_open(harness):
     with TestClient(harness.app) as client:
+        headers = operator_headers(client)
         with client.websocket_connect("/ws") as ws:
             ws.receive_json()  # hello
             ws.receive_json()  # snapshot
 
-            client.post("/api/devices/PSU1/open")
+            client.post("/api/devices/PSU1/open", headers=headers)
 
             connecting = ws.receive_json(mode="text")
             assert connecting == {

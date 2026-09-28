@@ -2,13 +2,17 @@
 // docs/design.md section 2) and keeps it live via the /ws WebSocket.
 // No build step, no framework - see design.md section 2 for why.
 
+const OPERATOR_TOKEN_KEY = "devgui_operator_token";
+
 const state = {
   layout: null,
   ws: null,
   clientId: null,
+  operatorToken: sessionStorage.getItem(OPERATOR_TOKEN_KEY),
+  isHolder: false,
 };
 
-// name -> { panel, badge, openBtn, closeBtn, errorEl }
+// name -> { panel, badge, openBtn, closeBtn, errorEl, lastState, lastError }
 const deviceElements = {};
 
 // widget id -> { container, unit, maxRows }
@@ -130,20 +134,41 @@ function applyDeviceState(name, stateValue, errorMessage) {
   const el = deviceElements[name];
   if (!el) return;
 
+  el.lastState = stateValue;
+  el.lastError = errorMessage;
+
   el.badge.textContent = stateLabel(stateValue);
   el.badge.className = `state-badge state-${stateValue}`;
-
-  if (el.openBtn) {
-    el.openBtn.disabled = !(stateValue === "disconnected" || stateValue === "error");
-  }
-  if (el.closeBtn) {
-    el.closeBtn.disabled = stateValue !== "connected";
-  }
 
   el.errorEl.hidden = !errorMessage;
   el.errorEl.textContent = errorMessage || "";
 
-  setOperantWidgetsEnabled(el.panel, stateValue === "connected");
+  updateDeviceControls(name);
+}
+
+// Operant widgets and the connect/disconnect buttons require BOTH the
+// device to be connected (or, for open, disconnected/error) AND this
+// browser to hold the operator right (design.md section 9.1) - the
+// server enforces this for real; disabling here is only a convenience.
+function updateDeviceControls(name) {
+  const el = deviceElements[name];
+  if (!el) return;
+
+  const stateValue = el.lastState;
+  if (el.openBtn) {
+    el.openBtn.disabled = !(
+      state.isHolder &&
+      (stateValue === "disconnected" || stateValue === "error")
+    );
+  }
+  if (el.closeBtn) {
+    el.closeBtn.disabled = !(state.isHolder && stateValue === "connected");
+  }
+  setOperantWidgetsEnabled(el.panel, state.isHolder && stateValue === "connected");
+}
+
+function refreshAllDeviceControls() {
+  Object.keys(deviceElements).forEach(updateDeviceControls);
 }
 
 function setOperantWidgetsEnabled(panel, enabled) {
@@ -251,13 +276,36 @@ function renderWidget(widget) {
   return wrap;
 }
 
+function operatorRequestHeaders(extra) {
+  const headers = { "X-Client-Id": state.clientId || "" };
+  if (state.operatorToken) headers["X-Operator-Token"] = state.operatorToken;
+  return Object.assign(headers, extra || {});
+}
+
+// A 403 means the server no longer considers us the holder (never
+// acquired, idle-timed-out, or lost after a disconnect past the grace
+// period) - the UI was only ever a convenience, so resync it now. This
+// only fixes up what we know for certain locally (we are not the holder);
+// the holder-name text is left as-is and will self-correct from the
+// operator_state broadcast that every such change also triggers.
+function handleOperatorRejection() {
+  if (state.isHolder) {
+    showToast("操作権が失われました", true);
+  }
+  clearOperatorTokenLocal();
+}
+
 async function callWidget(widgetId, value) {
   try {
     const res = await fetch(`/api/call/${encodeURIComponent(widgetId)}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: operatorRequestHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ value }),
     });
+    if (res.status === 403) {
+      handleOperatorRejection();
+      return;
+    }
     const body = await res.json();
     if (!body.ok) {
       showToast(`エラー: ${body.error}`, true);
@@ -271,7 +319,12 @@ async function callDeviceAction(name, action) {
   try {
     const res = await fetch(`/api/devices/${encodeURIComponent(name)}/${action}`, {
       method: "POST",
+      headers: operatorRequestHeaders(),
     });
+    if (res.status === 403) {
+      handleOperatorRejection();
+      return;
+    }
     const body = await res.json();
     if (!body.ok) {
       showToast(`エラー: ${body.error}`, true);
@@ -279,6 +332,107 @@ async function callDeviceAction(name, action) {
   } catch (err) {
     showToast(`通信エラー: ${err}`, true);
   }
+}
+
+// Used when we don't authoritatively know the global state (e.g. a failed
+// reclaim attempt): fixes up only what's true locally (we are not the
+// holder) and leaves the status text for the next operator_state broadcast
+// to correct, rather than guessing "free".
+function clearOperatorTokenLocal() {
+  state.operatorToken = null;
+  state.isHolder = false;
+  sessionStorage.removeItem(OPERATOR_TOKEN_KEY);
+  document.getElementById("operator-release-btn").hidden = true;
+  refreshAllDeviceControls();
+}
+
+// Used when we just authoritatively learned the true state from our own
+// request's response (acquire/reclaim/release), so the status text and
+// button visibility can be updated immediately instead of waiting for the
+// operator_state broadcast this same action triggers (avoids a race where
+// that broadcast could otherwise arrive and be applied before state.isHolder
+// is set, showing the holder name without "(自分)").
+function saveOperatorToken(token, displayName) {
+  state.operatorToken = token;
+  state.isHolder = true;
+  sessionStorage.setItem(OPERATOR_TOKEN_KEY, token);
+  applyOperatorInfo({ is_held: true, holder_display_name: displayName });
+}
+
+async function acquireOperator() {
+  try {
+    const res = await fetch("/api/operator/acquire", {
+      method: "POST",
+      headers: operatorRequestHeaders(),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      showToast(`操作権を取得できません: ${body.detail || res.status}`, true);
+      return;
+    }
+    const body = await res.json();
+    saveOperatorToken(body.token, body.display_name);
+  } catch (err) {
+    showToast(`通信エラー: ${err}`, true);
+  }
+}
+
+async function releaseOperator() {
+  if (!state.operatorToken) return;
+  try {
+    await fetch("/api/operator/release", {
+      method: "POST",
+      headers: operatorRequestHeaders(),
+    });
+  } catch (err) {
+    showToast(`通信エラー: ${err}`, true);
+  } finally {
+    state.operatorToken = null;
+    state.isHolder = false;
+    sessionStorage.removeItem(OPERATOR_TOKEN_KEY);
+    applyOperatorInfo({ is_held: false, holder_display_name: null });
+  }
+}
+
+// After a page reload the WebSocket gets a brand new client_id, but the
+// browser may still hold a valid operator token from before (sessionStorage
+// survives the reload). Presenting it re-associates the new client_id with
+// the same token within the disconnect grace period (design.md section 9.2).
+async function attemptReclaimOperator() {
+  if (!state.operatorToken) return;
+  try {
+    const res = await fetch("/api/operator/acquire", {
+      method: "POST",
+      headers: operatorRequestHeaders(),
+    });
+    if (res.ok) {
+      const body = await res.json();
+      saveOperatorToken(body.token, body.display_name);
+    } else {
+      clearOperatorTokenLocal();
+    }
+  } catch (err) {
+    // Leave the stored token as-is; a later action will retry via 403 handling.
+  }
+}
+
+function applyOperatorInfo(info) {
+  const statusEl = document.getElementById("operator-status");
+  const acquireBtn = document.getElementById("operator-acquire-btn");
+  const releaseBtn = document.getElementById("operator-release-btn");
+
+  if (!info.is_held) {
+    statusEl.textContent = "操作権: 空き";
+  } else if (state.isHolder) {
+    statusEl.textContent = `操作権: ${info.holder_display_name} (自分)`;
+  } else {
+    statusEl.textContent = `操作権: ${info.holder_display_name}`;
+  }
+
+  acquireBtn.hidden = info.is_held;
+  releaseBtn.hidden = !state.isHolder;
+
+  refreshAllDeviceControls();
 }
 
 function showToast(message, isError) {
@@ -361,6 +515,7 @@ function handleWsMessage(message) {
   switch (message.type) {
     case "hello":
       state.clientId = message.client_id;
+      attemptReclaimOperator();
       break;
     case "snapshot":
       Object.entries(message.devices).forEach(([name, info]) => {
@@ -369,6 +524,7 @@ function handleWsMessage(message) {
       Object.entries(message.displays || {}).forEach(([widgetId, entries]) => {
         entries.forEach((entry) => appendDisplayEntry(widgetId, entry));
       });
+      applyOperatorInfo(message.operator);
       break;
     case "device_state":
       applyDeviceState(message.name, message.state, message.error_message);
@@ -380,13 +536,18 @@ function handleWsMessage(message) {
         error: message.error,
       });
       break;
+    case "operator_state":
+      applyOperatorInfo(message);
+      break;
     default:
-      // operator_* / takeover_* / notice: later steps.
+      // takeover_* / notice: later steps.
       break;
   }
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  document.getElementById("operator-acquire-btn").addEventListener("click", acquireOperator);
+  document.getElementById("operator-release-btn").addEventListener("click", releaseOperator);
   await loadLayout();
   connectWebSocket();
 });
