@@ -8,7 +8,7 @@
 |---|---|---|---|---|
 | `ethergpib.etherscpi` | `EtherScpi` | — | `(ipAddr, port)` | `open()`, `close()`, `write()`, `sendCommands()`, `read()` |
 | `ethergpib.ethergpib` | `EtherGpib` | `EtherScpi` | `(devid, ipAddr)` | `dev()`, `read()`（override）＋継承の`open/close` |
-| `sourcemeter.__sourcemeters_pl` | `SoureMeter2400`（※クラス名タイポ） | `EtherGpib` | `(devid, ipAddr)` | `open()`, `output()`, `meas()`, `setV()`, `measIV()`, `get_message()`, `get()` |
+| `sourcemeter.__sourcemeters_pl` | `SourceMeter2400`（2026-09-28にタイポ`SoureMeter2400`から修正済み） | `EtherGpib` | `(devid, ipAddr)` | `open()`, `output()`, `meas()`, `setV()`, `measIV()`, `get_message()`, `get()` |
 | `sourcemeter.__sourcemeters_scpi` | `SourceMeter2450` | `EtherScpi` | `(ipAddr)` | `open()`, `meas()`, `output()`, `setV()`, `measIV()`, `get_message()`, `get()` |
 | `loatt.__loatt` | `loatt` | `EtherGpib` | `(devid)` | `set(att)`, `get()`（設計書の想定に最も近い） |
 | `loatt.__loatt_table` | `loattTable` | — | `(tableFile='')` | `getAtt(freq)`（デバイスではなくテーブル参照用の補助クラス） |
@@ -19,16 +19,16 @@
 | `synth.__synth` | `synth` | `EtherScpi` | `(addr, port=5025)` | `freq()`, `amp()`, `output()`（`self.open()`をコンストラクタ内で呼ぶ） |
 | `multiplier.__mp` | `mp` | `EtherScpi` | `(addr, port=5025)` | `on()`, `off()`, `get()`（`self.open()`をコンストラクタ内で呼ぶ） |
 
-非公開/重複ファイル: `chopper.mirror_server.Optserver`・`chopper.opt_server.OPTserver`はサーバ側実装（`__all__`に含まれず非公開）。`sourcemeter.sourcemeters_pl.SoureMeterPl`と`drs4.drs4_client.DRS4client`は、パッケージの`__init__.py`が別ファイル（`__`プレフィックス版）からインポートしているため未使用の重複ファイル。`synth`は2026-09-28時点で手続き型モジュール（`synth_py2/3.py`）からクラス版（`__synth.py`の`synth`クラス）に更新済み（旧・下記食い違い#5は解消）。`multiplier`パッケージも同日追加された新規モジュール。
+非公開/重複ファイル: `chopper.mirror_server.Optserver`・`chopper.opt_server.OPTserver`はサーバ側実装（`__all__`に含まれず非公開）。`sourcemeter.sourcemeters_pl.SourceMeterPl`と`drs4.drs4_client.DRS4client`は、パッケージの`__init__.py`が別ファイル（`__`プレフィックス版）からインポートしているため未使用の重複ファイル。`synth`は2026-09-28時点で手続き型モジュール（`synth_py2/3.py`）からクラス版（`__synth.py`の`synth`クラス）に更新済み（旧・下記食い違い#5は解消）。`multiplier`パッケージも同日追加された新規モジュール。
 
 ## design.md の前提との食い違い（要注意点）
 
 1. **コンストラクタが通信する**: `DRS4client`, `OPTclient`, `synth`, `mp` は`__init__`内で即座に`openTCP()`/`self.open()`を呼ぶ。`ifSynth`も`__init__`で直接`serial.Serial()`を開く（design.md §1.2の前提「コンストラクタでは通信を行わない」に反する）。ただし`EtherScpi`系の`open()`/`write()`/`read()`は失敗時に例外を投げず`False`を返すだけなので、実際にコンストラクタが例外で落ちることは少ない（＝`layout.py`の読み込み自体が失敗する事態にはなりにくい）。
 2. **`ifSynth`はimport時に副作用あり**: モジュールレベルで`synth = [ifSynth('/dev/ttyACM0'), ifSynth('/dev/ttyACM1')]`を実行し、`os.system('sudo chmod 777 ...')`も呼ぶ。
 3. **`open`/`close`という名前ではないクラスがある**: `DRS4client`/`OPTclient`は`openTCP`/`closeTCP`。design.md §6.2の`hasattr(instance, "open")`による自動判定では検出されない。
-4. **`open()`が例外ではなくboolを返す**: `EtherScpi.open()`（→`EtherGpib`→`SoureMeter2400`/`loatt`/`synth`/`mp`が継承）は失敗時に`False`を返すのみで例外を投げない。
+4. **`open()`が例外ではなくboolを返す**: `EtherScpi.open()`（→`EtherGpib`→`SourceMeter2400`/`loatt`/`synth`/`mp`が継承）は失敗時に`False`を返すのみで例外を投げない。
 5. ~~`synth`モジュールはクラスではない~~ → 2026-09-28時点で解消済み（`finerdev.synth.synth`クラスが追加された）。
-6. **`FINER_LOGDIR`環境変数が必須**: `loatt`, `mp`, `synth`, `SoureMeter2400`, `SourceMeter2450`はモジュールレベルで`os.environ['FINER_LOGDIR']`を読む。**現在このマシンでは未設定**であり、設定しないままこれらのモジュールをimportすると`KeyError`で即座に失敗する。devguiサーバーの実行環境（systemdユニット等）で必ず設定する必要がある。
+6. **`FINER_LOGDIR`環境変数が必須**: `loatt`, `mp`, `synth`, `SourceMeter2400`, `SourceMeter2450`はモジュールレベルで`os.environ['FINER_LOGDIR']`を読む。**現在このマシンでは未設定**であり、設定しないままこれらのモジュールをimportすると`KeyError`で即座に失敗する。devguiサーバーの実行環境（systemdユニット等）で必ず設定する必要がある。
 7. **`loatt.set()`のバグ**: 範囲外の値で`raise("...")`（文字列を直接raise）しており、Python 3では`TypeError: exceptions must derive from BaseException`になる（意図した`ValueError`にはならない）。devgui側のエラー表示は例外の型とメッセージをそのまま出す設計（design.md §10）なので、この場合は分かりにくいエラーが表示される点に注意。
 8. **`EtherScpi.open()`に接続タイムアウトが無い**: `socket.connect()`にタイムアウトを設定していないため、ホスト名が名前解決できてもTCP的に到達不能（ファイアウォール等でSYNが無視される場合等）だと、OSのデフォルトのTCP接続タイムアウトまで`open()`がブロックし得る。`synth`/`mp`はコンストラクタで`open()`を呼ぶため、**該当ホストが起動時に到達不能だと`layout.py`の読み込み自体が長時間ブロックする**（`examples/layout_example.py`を実機ネットワーク外の開発機で試した際に実際に発生し確認済み）。ラボ側のネットワークが健全であれば通常問題にならないが、起動時にすべての対象ホストが疎通していることを確認しておくとよい。
 
@@ -40,8 +40,8 @@
 
 | tab (Category) | instance名 (Device.name) | 生成コード | bus |
 |---|---|---|---|
-| RX | SourceMeter1 | `SoureMeter2400(devid=25, ipAddr="prologix")` | `"gpib-prologix"` |
-| RX | SourceMeter2 | `SoureMeter2400(devid=18, ipAddr="prologix")` | `"gpib-prologix"` |
+| RX | SourceMeter1 | `SourceMeter2400(devid=25, ipAddr="prologix")` | `"gpib-prologix"` |
+| RX | SourceMeter2 | `SourceMeter2400(devid=18, ipAddr="prologix")` | `"gpib-prologix"` |
 | RX | SourceMeter3 | `SourceMeter2450(ipAddr="finer-sm3")` | `None`（LAN、独立） |
 | RX | SourceMeter4 | `SourceMeter2450(ipAddr="finer-sm4")` | `None`（LAN、独立） |
 | LO | LO att1 | `loatt(devid=8)` | `"gpib-prologix"` |

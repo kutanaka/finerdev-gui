@@ -23,7 +23,7 @@ Run with:
 from devgui import Category, Device, DigitInput, Display, NumberInput, Select, Toggle
 from finerdev.loatt import loatt
 from finerdev.multiplier import mp
-from finerdev.sourcemeter import SoureMeter2400, SourceMeter2450
+from finerdev.sourcemeter import SourceMeter2400, SourceMeter2450
 from finerdev.synth import synth
 
 GPIB_BUS = "gpib-prologix"  # SourceMeter1/2 and LO att1/2 share one physical
@@ -43,8 +43,8 @@ def build(cls, *args, **kwargs):
     return instance, f"{cls.__name__}({call_args})"
 
 
-source_meter1, source_meter1_repr = build(SoureMeter2400, devid=25, ipAddr="prologix")
-source_meter2, source_meter2_repr = build(SoureMeter2400, devid=18, ipAddr="prologix")
+source_meter1, source_meter1_repr = build(SourceMeter2400, devid=25, ipAddr="prologix")
+source_meter2, source_meter2_repr = build(SourceMeter2400, devid=18, ipAddr="prologix")
 source_meter3, source_meter3_repr = build(SourceMeter2450, ipAddr="finer-sm3")
 source_meter4, source_meter4_repr = build(SourceMeter2450, ipAddr="finer-sm4")
 
