@@ -14,6 +14,7 @@ from examples.mock_devices import MockDevice
 class Harness:
     def __init__(self, *, takeover_wait=10.0, takeover_cooldown=30.0, title="devgui"):
         self.psu = MockDevice()
+        self.att_mock = MockDevice()
         self.selected: list[object] = []
         self.att_values: list[int] = []
 
@@ -38,7 +39,7 @@ class Harness:
                     ),
                     Device(
                         "Att1",
-                        object(),
+                        self.att_mock,
                         widgets=[
                             DigitInput(
                                 "Attenuation",
@@ -46,6 +47,7 @@ class Harness:
                                 digits=4,
                                 min=0,
                                 max=4095,
+                                get=self.att_mock.get,
                             ),
                         ],
                         auto_open=False,
@@ -227,6 +229,44 @@ def test_api_call_digit_input_out_of_range_returns_ok_false(harness):
         assert body["ok"] is False
         assert "above max" in body["error"]
         assert harness.att_values == []
+
+
+def test_digit_input_get_is_read_on_connect_and_reflected_in_layout(harness):
+    harness.att_mock.value = 777.0
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        resp = client.post("/api/devices/Att1/open", headers=headers)
+        assert resp.json() == {"ok": True}
+        assert wait_until(
+            lambda: harness.device_manager.get("Att1").state == DeviceState.CONNECTED
+        )
+        # widget.default is mutated in place, so a fresh /api/layout fetch
+        # (this one, or a reload) reflects the value read back on connect.
+        assert wait_until(
+            lambda: client.get("/api/layout").json()["categories"][0]["devices"][1]["widgets"][0][
+                "default"
+            ]
+            == 777
+        )
+
+
+def test_digit_input_get_broadcasts_widget_value_on_connect(harness):
+    harness.att_mock.value = 42.0
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()  # hello
+            ws.receive_json()  # snapshot
+
+            client.post("/api/devices/Att1/open", headers=headers)
+
+            messages = []
+            for _ in range(3):
+                messages.append(ws.receive_json(mode="text"))
+            widget_value_msgs = [m for m in messages if m["type"] == "widget_value"]
+            assert widget_value_msgs == [
+                {"type": "widget_value", "widget_id": "Att1:0", "value": 42}
+            ]
 
 
 def test_api_call_unknown_widget_404(harness):

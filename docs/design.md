@@ -141,7 +141,7 @@ layout = [
 |---|---|---|
 | `Button(label, call, confirm=False)` | `call()` | `confirm=True` で実行前に確認ダイアログ |
 | `NumberInput(label, call, unit=None, min=None, max=None, step=None, default=None, type=float)` | `call(value)`。`type` で `float` / `int` に変換 | 入力欄＋「設定」ボタン。min/max はサーバー側でも検証 |
-| `DigitInput(label, call, digits=4, min=None, max=None, default=0)` | `call(int)`（「設定」ボタン押下時のみ） | 桁ごとに増減ボタンを持つ10進整数入力（既定4桁）。桁を変更している間は値が青字になり未確定であることを示す。「設定」で確定すると黒字に戻る。min/max はサーバー側でも検証し、拒否された場合は元の値（直前に確定した値）に戻る。アッテネータの設定値のような、連続量ではない機器コードの入力を想定 |
+| `DigitInput(label, call, digits=4, min=None, max=None, default=0, get=None)` | `call(int)`（「設定」ボタン押下時のみ） | 桁ごとに増減ボタンを持つ10進整数入力（既定4桁）。桁を変更すると値が青字になり未確定であることを示し、「設定」ボタンは値を変更した時のみ有効になる。「設定」で確定すると黒字に戻る。min/max はサーバー側でも検証し、拒否された場合は元の値（直前に確定した値）に戻る。`get`を指定すると、デバイスが`connected`になるたび（起動時のauto_open、または再接続時）に1回だけ呼ばれ、その結果を表示中の値として反映する（Toggle/Selectと異なり実機からの読み戻しに対応）。アッテネータの設定値のような、連続量ではない機器コードの入力を想定 |
 | `Toggle(label, call, default=False)` | `call(bool)` | 切り替えた時点で呼ぶ |
 | `Select(label, call, options)` | `call(選択値)` | `options` はリスト、または `{表示名: 値}` の辞書 |
 | `TextInput(label, call, default="")` | `call(str)` | 入力欄＋「送信」ボタン |

@@ -190,6 +190,11 @@ body {
   margin-bottom: 0.6rem;
 }
 
+.widget-error {
+  color: #dc2626;
+  font-size: 0.78rem;
+}
+
 .widget label {
   font-size: 0.85rem;
   color: var(--muted);

@@ -58,9 +58,11 @@ def loatt_widgets(dev):
     # and the "設定" action's success/failure feedback cover it.
     # DigitInput (not NumberInput) since the device code is a raw 4-digit
     # value (0-4095, sent as a 4-hex-digit command internally), not a
-    # continuous physical quantity.
+    # continuous physical quantity. get=dev.get reads the device's actual
+    # current attenuation once whenever it (re)connects, so the panel
+    # starts from reality instead of always showing 0000.
     return [
-        DigitInput("減衰量設定", call=dev.set, digits=4, min=0, max=4095),
+        DigitInput("減衰量設定", call=dev.set, digits=4, min=0, max=4095, get=dev.get),
     ]
 
 

@@ -21,9 +21,15 @@ const deviceElements = {};
 // widget id -> { container, unit, maxRows }
 const displayElements = {};
 
-// widget id -> owning device name, for routing a failed call's error to
-// its panel (design.md section 10: "該当パネルに直近のエラーを表示する").
-const widgetOwner = {};
+// widget id -> its own error <div>, shown on a failed call and cleared on
+// the next successful one for that same widget (design.md section 10).
+const widgetErrorElements = {};
+
+// widget id -> (deviceEnabled: boolean) => void, for a widget whose control
+// needs to combine the normal connected+holder gating with its own extra
+// condition (e.g. DigitInput's "設定" button, also gated on having a
+// pending change) instead of being toggled directly via data-operant.
+const widgetEnableCallbacks = {};
 
 async function loadLayout() {
   const res = await fetch("/api/layout");
@@ -127,7 +133,6 @@ function renderDevicePanel(device) {
   const body = document.createElement("div");
   body.className = "device-body";
   device.widgets.forEach((widget) => {
-    widgetOwner[widget.id] = device.name;
     body.appendChild(renderWidget(widget));
   });
   panel.appendChild(body);
@@ -196,6 +201,17 @@ function setOperantWidgetsEnabled(panel, enabled) {
   panel.querySelectorAll('[data-operant="true"]').forEach((el) => {
     el.disabled = !enabled;
   });
+  panel.querySelectorAll("[data-custom-enable-id]").forEach((el) => {
+    const cb = widgetEnableCallbacks[el.dataset.customEnableId];
+    if (cb) cb(enabled);
+  });
+}
+
+function setWidgetError(widgetId, message) {
+  const el = widgetErrorElements[widgetId];
+  if (!el) return;
+  el.hidden = !message;
+  el.textContent = message || "";
 }
 
 function renderWidget(widget) {
@@ -298,6 +314,12 @@ function renderWidget(widget) {
       break;
   }
 
+  const errorEl = document.createElement("div");
+  errorEl.className = "widget-error";
+  errorEl.hidden = true;
+  wrap.appendChild(errorEl);
+  widgetErrorElements[widget.id] = errorEl;
+
   return wrap;
 }
 
@@ -307,6 +329,11 @@ function renderWidget(widget) {
 // on success, that becomes the new confirmed value (digits back to black),
 // or on rejection (e.g. out of range) reverts the pending value back to the
 // last-confirmed one (design.md section 4.3).
+// widget id -> (value: number) => void, so a live "widget_value" push
+// (design.md section 4.3's get()-on-connect) can update an already-
+// rendered DigitInput without a page reload.
+const digitInputControllers = {};
+
 function renderDigitInput(widget) {
   const container = document.createElement("div");
   container.className = "digit-input";
@@ -314,7 +341,12 @@ function renderDigitInput(widget) {
   const digitCount = widget.digits;
   let confirmedValue = widget.default ?? 0;
   let pendingValue = confirmedValue;
+  let deviceEnabled = false;
   const digitEls = [];
+
+  function updateSetButtonEnabled() {
+    setBtn.disabled = !(deviceEnabled && pendingValue !== confirmedValue);
+  }
 
   function render() {
     const text = String(Math.max(pendingValue, 0)).padStart(digitCount, "0").slice(-digitCount);
@@ -323,6 +355,7 @@ function renderDigitInput(widget) {
       digitEls[i].textContent = text[i];
       digitEls[i].classList.toggle("pending", isPending);
     }
+    updateSetButtonEnabled();
   }
 
   function changeDigit(index, delta) {
@@ -362,10 +395,14 @@ function renderDigitInput(widget) {
     digitEls.push(valueEl);
   }
 
+  // Not data-operant: its enabled state also depends on "is there a
+  // pending change", so it's driven entirely by updateSetButtonEnabled()
+  // (called from render() and from the widgetEnableCallbacks hook below)
+  // rather than the blanket connected+holder toggle every other control gets.
   const setBtn = document.createElement("button");
   setBtn.type = "button";
   setBtn.textContent = "設定";
-  setBtn.dataset.operant = "true";
+  setBtn.dataset.customEnableId = widget.id;
   setBtn.addEventListener("click", async () => {
     const valueToSend = pendingValue;
     const ok = await callWidgetForResult(widget.id, valueToSend);
@@ -377,6 +414,17 @@ function renderDigitInput(widget) {
     render();
   });
   container.appendChild(setBtn);
+
+  widgetEnableCallbacks[widget.id] = (enabled) => {
+    deviceEnabled = enabled;
+    updateSetButtonEnabled();
+  };
+
+  digitInputControllers[widget.id] = (value) => {
+    confirmedValue = value;
+    pendingValue = value;
+    render();
+  };
 
   render();
   return container;
@@ -418,25 +466,20 @@ async function callWidgetForResult(widgetId, value) {
     const body = await res.json();
     if (!body.ok) {
       showToast(`エラー: ${body.error}`, true);
-      showPanelError(widgetOwner[widgetId], body.error);
+      setWidgetError(widgetId, body.error);
       return false;
     }
+    setWidgetError(widgetId, null);
     return true;
   } catch (err) {
     showToast(`通信エラー: ${err}`, true);
+    setWidgetError(widgetId, String(err));
     return false;
   }
 }
 
 async function callWidget(widgetId, value) {
   await callWidgetForResult(widgetId, value);
-}
-
-function showPanelError(deviceName, message) {
-  const el = deviceElements[deviceName];
-  if (!el) return;
-  el.errorEl.hidden = false;
-  el.errorEl.textContent = message;
 }
 
 async function callDeviceAction(name, action) {
@@ -769,6 +812,11 @@ function handleWsMessage(message) {
         error: message.error,
       });
       break;
+    case "widget_value": {
+      const controller = digitInputControllers[message.widget_id];
+      if (controller) controller(message.value);
+      break;
+    }
     case "operator_state":
       applyOperatorInfo(message);
       break;

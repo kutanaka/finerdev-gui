@@ -56,17 +56,25 @@ class DigitInput(Widget):
     rather than a continuous physical quantity. `call` only fires when the
     operator commits with the widget's own "設定" action - not per digit
     change. See docs/design.md section 4.3.
+
+    `get`, if given, is called once whenever the owning device becomes
+    `connected` (auto_open at startup or a later manual reconnect), and its
+    result seeds the widget's displayed/confirmed value - unlike Toggle/
+    Select, which never read back hardware state (section 4.3).
     """
 
     digits: int = 4
     min: int | None = None
     max: int | None = None
     default: int = 0
+    get: Callable[[], Any] | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.digits <= 0:
             raise ValueError(f"DigitInput '{self.label}': digits must be > 0, got {self.digits}")
+        if self.get is not None and not callable(self.get):
+            raise TypeError(f"DigitInput '{self.label}': get must be callable or None")
         if self.min is not None and self.max is not None and self.min > self.max:
             raise ValueError(
                 f"DigitInput '{self.label}': min ({self.min}) must be <= max ({self.max})"

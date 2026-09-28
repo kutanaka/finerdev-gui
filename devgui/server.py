@@ -265,6 +265,50 @@ def create_app(
     def _track(name: str, future: Future) -> None:
         future.add_done_callback(lambda f: _broadcast_device_state(name))
 
+    def _broadcast_widget_value(widget_id: str, value: Any) -> None:
+        loop = loop_holder.get("loop")
+        if loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(
+            _broadcast({"type": "widget_value", "widget_id": widget_id, "value": value}), loop
+        )
+
+    def _read_digit_inputs_for_device(device: Device) -> None:
+        """Once a device is connected, read()-back each of its DigitInput
+        widgets that declared a `get` (section 4.3) and use the result as
+        the new displayed/confirmed value - mutating `widget.default` in
+        place means a fresh /api/layout fetch (a reload, or a client that
+        connects later) also picks it up, not just already-open clients."""
+        for widget in device.widgets:
+            if not (isinstance(widget, DigitInput) and widget.get is not None):
+                continue
+
+            def on_done(f: Future, w: DigitInput = widget) -> None:
+                if f.exception() is not None:
+                    logger.warning(
+                        "failed to read initial value for %s: %s", w.id, f.exception()
+                    )
+                    return
+                try:
+                    value = int(f.result())
+                except (TypeError, ValueError):
+                    logger.warning("%s: get() returned a non-integer value", w.id)
+                    return
+                w.default = value
+                _broadcast_widget_value(w.id, value)
+
+            bus_manager.submit(device.bus, widget.get, priority=Priority.LOW).add_done_callback(
+                on_done
+            )
+
+    def _track_open(device: Device, future: Future) -> None:
+        def on_done(f: Future) -> None:
+            _broadcast_device_state(device.name)
+            if f.exception() is None:
+                _read_digit_inputs_for_device(device)
+
+        future.add_done_callback(on_done)
+
     def _on_display_entry(widget_id: str, entry: dict[str, Any]) -> None:
         loop = loop_holder.get("loop")
         if loop is None:
@@ -335,7 +379,7 @@ def create_app(
     async def lifespan(app: FastAPI):
         loop_holder["loop"] = asyncio.get_running_loop()
         for name, future in device_manager.auto_open_all():
-            _track(name, future)
+            _track_open(device_manager.get(name).device, future)
         poller.start()
         background_tasks.append(asyncio.create_task(_expiry_loop()))
         yield
@@ -399,7 +443,7 @@ def create_app(
         except (DeviceNotInstalledError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         _broadcast_device_state(name)
-        _track(name, future)
+        _track_open(runtime.device, future)
         try:
             await asyncio.wrap_future(future)
         except Exception as exc:
