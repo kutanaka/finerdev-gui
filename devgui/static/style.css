@@ -240,6 +240,18 @@ body {
   font-size: 0.7rem;
 }
 
+.gettable-number-input {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.gettable-number-input input.pending {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .display-log {
   --visible-rows: 5;
   max-height: calc(var(--visible-rows) * 1.7em);

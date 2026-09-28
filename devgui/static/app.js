@@ -238,6 +238,10 @@ function renderWidget(widget) {
       break;
     }
     case "NumberInput": {
+      if (widget.has_get) {
+        wrap.appendChild(renderGettableNumberInput(widget));
+        break;
+      }
       const input = document.createElement("input");
       input.type = "number";
       if (widget.step != null) input.step = widget.step;
@@ -330,9 +334,10 @@ function renderWidget(widget) {
 // or on rejection (e.g. out of range) reverts the pending value back to the
 // last-confirmed one (design.md section 4.3).
 // widget id -> (value: number) => void, so a live "widget_value" push
-// (design.md section 4.3's get()-on-connect) can update an already-
-// rendered DigitInput without a page reload.
-const digitInputControllers = {};
+// (design.md section 4.3's get()-on-connect / get()-after-"設定") can
+// update an already-rendered DigitInput or gettable NumberInput without a
+// page reload.
+const gettableWidgetControllers = {};
 
 function renderDigitInput(widget) {
   const container = document.createElement("div");
@@ -344,8 +349,10 @@ function renderDigitInput(widget) {
   let deviceEnabled = false;
   const digitEls = [];
 
-  function updateSetButtonEnabled() {
-    setBtn.disabled = !(deviceEnabled && pendingValue !== confirmedValue);
+  function updateActionButtonsEnabled() {
+    const enabled = deviceEnabled && pendingValue !== confirmedValue;
+    setBtn.disabled = !enabled;
+    cancelBtn.disabled = !enabled;
   }
 
   function render() {
@@ -355,7 +362,7 @@ function renderDigitInput(widget) {
       digitEls[i].textContent = text[i];
       digitEls[i].classList.toggle("pending", isPending);
     }
-    updateSetButtonEnabled();
+    updateActionButtonsEnabled();
   }
 
   function changeDigit(index, delta) {
@@ -395,10 +402,11 @@ function renderDigitInput(widget) {
     digitEls.push(valueEl);
   }
 
-  // Not data-operant: its enabled state also depends on "is there a
-  // pending change", so it's driven entirely by updateSetButtonEnabled()
-  // (called from render() and from the widgetEnableCallbacks hook below)
-  // rather than the blanket connected+holder toggle every other control gets.
+  // Neither button is data-operant: their enabled state also depends on
+  // "is there a pending change", so it's driven entirely by
+  // updateActionButtonsEnabled() (called from render() and from the
+  // widgetEnableCallbacks hook below) rather than the blanket connected+
+  // holder toggle every other control gets.
   const setBtn = document.createElement("button");
   setBtn.type = "button";
   setBtn.textContent = "設定";
@@ -415,14 +423,102 @@ function renderDigitInput(widget) {
   });
   container.appendChild(setBtn);
 
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.textContent = "キャンセル";
+  cancelBtn.dataset.customEnableId = widget.id;
+  cancelBtn.addEventListener("click", () => {
+    pendingValue = confirmedValue;
+    render();
+  });
+  container.appendChild(cancelBtn);
+
   widgetEnableCallbacks[widget.id] = (enabled) => {
     deviceEnabled = enabled;
-    updateSetButtonEnabled();
+    updateActionButtonsEnabled();
   };
 
-  digitInputControllers[widget.id] = (value) => {
+  gettableWidgetControllers[widget.id] = (value) => {
     confirmedValue = value;
     pendingValue = value;
+    render();
+  };
+
+  render();
+  return container;
+}
+
+// A NumberInput with get=... set (design.md section 4.3): same get/set
+// pending-value behavior as DigitInput (pending shown in blue, "設定"/
+// "キャンセル" enabled only while pending != confirmed), but the entry
+// itself stays a plain number input rather than a digit wheel.
+function renderGettableNumberInput(widget) {
+  const container = document.createElement("div");
+  container.className = "gettable-number-input";
+
+  let confirmedValue = widget.default ?? 0;
+  let deviceEnabled = false;
+
+  const input = document.createElement("input");
+  input.type = "number";
+  if (widget.step != null) input.step = widget.step;
+  if (widget.min != null) input.min = widget.min;
+  if (widget.max != null) input.max = widget.max;
+  input.value = confirmedValue;
+  input.dataset.operant = "true";
+
+  function pendingValue() {
+    const n = Number(input.value);
+    return Number.isNaN(n) ? confirmedValue : n;
+  }
+
+  function updateActionButtonsEnabled() {
+    const enabled = deviceEnabled && pendingValue() !== confirmedValue;
+    setBtn.disabled = !enabled;
+    cancelBtn.disabled = !enabled;
+  }
+
+  function render() {
+    input.classList.toggle("pending", pendingValue() !== confirmedValue);
+    updateActionButtonsEnabled();
+  }
+
+  input.addEventListener("input", render);
+
+  const setBtn = document.createElement("button");
+  setBtn.type = "button";
+  setBtn.textContent = "設定";
+  setBtn.dataset.customEnableId = widget.id;
+  setBtn.addEventListener("click", async () => {
+    const valueToSend = pendingValue();
+    const ok = await callWidgetForResult(widget.id, valueToSend);
+    if (ok) {
+      confirmedValue = valueToSend;
+    }
+    input.value = confirmedValue;
+    render();
+  });
+  container.appendChild(input);
+  container.appendChild(setBtn);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.textContent = "キャンセル";
+  cancelBtn.dataset.customEnableId = widget.id;
+  cancelBtn.addEventListener("click", () => {
+    input.value = confirmedValue;
+    render();
+  });
+  container.appendChild(cancelBtn);
+
+  widgetEnableCallbacks[widget.id] = (enabled) => {
+    deviceEnabled = enabled;
+    updateActionButtonsEnabled();
+  };
+
+  gettableWidgetControllers[widget.id] = (value) => {
+    confirmedValue = value;
+    input.value = value;
     render();
   };
 
@@ -813,7 +909,7 @@ function handleWsMessage(message) {
       });
       break;
     case "widget_value": {
-      const controller = digitInputControllers[message.widget_id];
+      const controller = gettableWidgetControllers[message.widget_id];
       if (controller) controller(message.value);
       break;
     }

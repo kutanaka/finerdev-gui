@@ -11,10 +11,28 @@ from devgui.widgets import Button, Category, Device, DigitInput, Display, Number
 from examples.mock_devices import MockDevice
 
 
+class DualPurposeValue:
+    """Mimics finerdev's freq()/amp()-style methods: no-arg call reads,
+    one-arg call writes - the same callable is used for both `call` and
+    `get` on a gettable NumberInput."""
+
+    def __init__(self, initial=0.0):
+        self.value = initial
+        self.calls: list[float] = []
+
+    def __call__(self, value=None):
+        if value is None:
+            return self.value
+        self.value = value
+        self.calls.append(value)
+
+
 class Harness:
     def __init__(self, *, takeover_wait=10.0, takeover_cooldown=30.0, title="devgui"):
         self.psu = MockDevice()
         self.att_mock = MockDevice()
+        self.synth_mock = MockDevice()
+        self.synth_freq = DualPurposeValue(0.0)
         self.selected: list[object] = []
         self.att_values: list[int] = []
 
@@ -48,6 +66,21 @@ class Harness:
                                 min=0,
                                 max=4095,
                                 get=self.att_mock.get,
+                            ),
+                        ],
+                        auto_open=False,
+                    ),
+                    Device(
+                        "Synth1",
+                        self.synth_mock,
+                        widgets=[
+                            NumberInput(
+                                "Freq",
+                                call=self.synth_freq,
+                                get=self.synth_freq,
+                                unit="GHz",
+                                min=0,
+                                max=20,
                             ),
                         ],
                         auto_open=False,
@@ -267,6 +300,62 @@ def test_digit_input_get_broadcasts_widget_value_on_connect(harness):
             assert widget_value_msgs == [
                 {"type": "widget_value", "widget_id": "Att1:0", "value": 42}
             ]
+
+
+def test_number_input_serializes_has_get(harness):
+    with TestClient(harness.app) as client:
+        data = client.get("/api/layout").json()
+        plain = data["categories"][0]["devices"][0]["widgets"][1]  # PSU1's Voltage
+        gettable = data["categories"][0]["devices"][2]["widgets"][0]  # Synth1's Freq
+        assert plain["type"] == "NumberInput"
+        assert plain["has_get"] is False
+        assert gettable["type"] == "NumberInput"
+        assert gettable["has_get"] is True
+
+
+def test_number_input_get_is_read_on_connect(harness):
+    harness.synth_freq.value = 9.5
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        client.post("/api/devices/Synth1/open", headers=headers)
+        assert wait_until(
+            lambda: harness.device_manager.get("Synth1").state == DeviceState.CONNECTED
+        )
+        assert wait_until(
+            lambda: client.get("/api/layout").json()["categories"][0]["devices"][2]["widgets"][
+                0
+            ]["default"]
+            == 9.5
+        )
+
+
+def test_number_input_get_is_reread_after_successful_set(harness):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        resp = client.post("/api/call/Synth1:0", json={"value": 5.0}, headers=headers)
+        assert resp.json() == {"ok": True}
+        assert harness.synth_freq.calls == [5.0]
+        # freq() is called again after the set succeeds, and its result
+        # (not just the value we sent) is what ends up in `default`.
+        assert wait_until(
+            lambda: client.get("/api/layout").json()["categories"][0]["devices"][2]["widgets"][
+                0
+            ]["default"]
+            == 5.0
+        )
+
+
+def test_number_input_get_broadcasts_widget_value_after_set(harness):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()  # hello
+            ws.receive_json()  # snapshot
+
+            client.post("/api/call/Synth1:0", json={"value": 7.25}, headers=headers)
+
+            message = ws.receive_json(mode="text")
+            assert message == {"type": "widget_value", "widget_id": "Synth1:0", "value": 7.25}
 
 
 def test_api_call_unknown_widget_404(harness):

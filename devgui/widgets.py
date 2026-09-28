@@ -30,12 +30,24 @@ class Button(Widget):
 
 @dataclass
 class NumberInput(Widget):
+    """`get`, if given, opts this widget into the same get/set pending-value
+    behavior as DigitInput (section 4.3): the entry shows in blue while it
+    differs from the last-confirmed value, "設定" (and a "キャンセル" button
+    next to it) are only enabled while there's a pending change, `get` seeds
+    the initial value whenever the device connects, and is called again
+    after every successful "設定" to reflect the device's actual resulting
+    value rather than just assuming it took the sent value verbatim. With no
+    `get` (the default), NumberInput behaves exactly as before: a plain
+    entry with an always-enabled "設定" button and no cancel button.
+    """
+
     unit: str | None = None
     min: float | None = None
     max: float | None = None
     step: float | None = None
     default: float | None = None
     type: type = float
+    get: Callable[[], Any] | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -47,6 +59,8 @@ class NumberInput(Widget):
             raise ValueError(
                 f"NumberInput '{self.label}': type must be int or float, got {self.type!r}"
             )
+        if self.get is not None and not callable(self.get):
+            raise TypeError(f"NumberInput '{self.label}': get must be callable or None")
 
 
 @dataclass

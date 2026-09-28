@@ -92,6 +92,7 @@ def _serialize_widget(widget: Widget) -> dict[str, Any]:
             step=widget.step,
             default=widget.default,
             value_type=widget.type.__name__,
+            has_get=widget.get is not None,
         )
     elif isinstance(widget, DigitInput):
         base.update(digits=widget.digits, min=widget.min, max=widget.max, default=widget.default)
@@ -273,39 +274,49 @@ def create_app(
             _broadcast({"type": "widget_value", "widget_id": widget_id, "value": value}), loop
         )
 
-    def _read_digit_inputs_for_device(device: Device) -> None:
-        """Once a device is connected, read()-back each of its DigitInput
-        widgets that declared a `get` (section 4.3) and use the result as
-        the new displayed/confirmed value - mutating `widget.default` in
-        place means a fresh /api/layout fetch (a reload, or a client that
-        connects later) also picks it up, not just already-open clients."""
+    def _coerce_get_result(widget: Widget, raw: Any) -> Any:
+        if isinstance(widget, DigitInput):
+            return int(raw)
+        if isinstance(widget, NumberInput):
+            return widget.type(raw)
+        raise TypeError(f"unsupported gettable widget type {type(widget).__name__}")
+
+    def _refresh_gettable_widget(device: Device, widget: Widget) -> None:
+        """Read `widget.get()` once and use the result as the new displayed/
+        confirmed value - mutating `widget.default` in place means a fresh
+        /api/layout fetch (a reload, or a client connecting later) also
+        picks it up, not just already-open clients (which get the
+        `widget_value` broadcast below instead)."""
+        getter = getattr(widget, "get", None)
+        if getter is None:
+            return
+
+        def on_done(f: Future) -> None:
+            if f.exception() is not None:
+                logger.warning("failed to read value for %s: %s", widget.id, f.exception())
+                return
+            try:
+                value = _coerce_get_result(widget, f.result())
+            except (TypeError, ValueError):
+                logger.warning("%s: get() returned an incompatible value", widget.id)
+                return
+            widget.default = value
+            _broadcast_widget_value(widget.id, value)
+
+        bus_manager.submit(device.bus, getter, priority=Priority.LOW).add_done_callback(on_done)
+
+    def _read_gettable_widgets_for_device(device: Device) -> None:
+        """Once a device is connected, refresh every widget that declared a
+        `get` (DigitInput, or NumberInput with get=...; section 4.3)."""
         for widget in device.widgets:
-            if not (isinstance(widget, DigitInput) and widget.get is not None):
-                continue
-
-            def on_done(f: Future, w: DigitInput = widget) -> None:
-                if f.exception() is not None:
-                    logger.warning(
-                        "failed to read initial value for %s: %s", w.id, f.exception()
-                    )
-                    return
-                try:
-                    value = int(f.result())
-                except (TypeError, ValueError):
-                    logger.warning("%s: get() returned a non-integer value", w.id)
-                    return
-                w.default = value
-                _broadcast_widget_value(w.id, value)
-
-            bus_manager.submit(device.bus, widget.get, priority=Priority.LOW).add_done_callback(
-                on_done
-            )
+            if isinstance(widget, (DigitInput, NumberInput)) and widget.get is not None:
+                _refresh_gettable_widget(device, widget)
 
     def _track_open(device: Device, future: Future) -> None:
         def on_done(f: Future) -> None:
             _broadcast_device_state(device.name)
             if f.exception() is None:
-                _read_digit_inputs_for_device(device)
+                _read_gettable_widgets_for_device(device)
 
         future.add_done_callback(on_done)
 
@@ -422,6 +433,10 @@ def create_app(
             logger.exception("call %s by %s value=%r failed", widget_id, who, raw_value)
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         logger.info("call %s by %s value=%r -> ok", widget_id, who, raw_value)
+        if isinstance(widget, (DigitInput, NumberInput)) and widget.get is not None:
+            # Re-read rather than trust the value we just sent, in case the
+            # device clamped/rounded it (section 4.3).
+            _refresh_gettable_widget(device, widget)
         if isinstance(widget, Display):
             return {"ok": True, "result": result}
         return {"ok": True}

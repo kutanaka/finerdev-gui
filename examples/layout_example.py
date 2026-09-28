@@ -69,10 +69,13 @@ def loatt_widgets(dev):
 def synth_widgets(dev):
     # No readback Display for freq/amp either, for the same reason as
     # loatt_widgets above - these are settings this panel owns, not
-    # independently-changing measurements.
+    # independently-changing measurements. get=dev.freq/dev.amp reuses the
+    # same dual-purpose method as call= (finerdev's freq()/amp() return the
+    # current value when called with no argument), giving the same
+    # get/set pending-value behavior as loatt's DigitInput, entry-style.
     return [
-        NumberInput("周波数設定", call=dev.freq, unit="GHz", min=0, step=0.001),
-        NumberInput("出力レベル設定", call=dev.amp, unit="dBm"),
+        NumberInput("周波数設定", call=dev.freq, get=dev.freq, unit="GHz", min=0, step=0.001),
+        NumberInput("出力レベル設定", call=dev.amp, get=dev.amp, unit="dBm"),
         Toggle("出力ON/OFF", call=dev.output),
     ]
 

@@ -43,6 +43,16 @@ def test_number_input_type_must_be_int_or_float():
         NumberInput("V", call=lambda v: None, type=str)
 
 
+def test_number_input_get_defaults_to_none():
+    n = NumberInput("V", call=lambda v: None)
+    assert n.get is None
+
+
+def test_number_input_get_must_be_callable():
+    with pytest.raises(TypeError):
+        NumberInput("V", call=lambda v: None, get="not callable")
+
+
 def test_number_input_defaults_are_valid():
     n = NumberInput("V", call=lambda v: None)
     assert n.type is float
@@ -79,6 +89,12 @@ def test_digit_input_defaults():
     assert d.min is None
     assert d.max is None
     assert d.default == 0
+    assert d.get is None
+
+
+def test_digit_input_get_must_be_callable():
+    with pytest.raises(TypeError):
+        DigitInput("Att", call=lambda v: None, get="not callable")
 
 
 def test_digit_input_digits_must_be_positive():

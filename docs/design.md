@@ -140,8 +140,8 @@ layout = [
 | 部品 | 呼び出し | 主なオプション |
 |---|---|---|
 | `Button(label, call, confirm=False)` | `call()` | `confirm=True` で実行前に確認ダイアログ |
-| `NumberInput(label, call, unit=None, min=None, max=None, step=None, default=None, type=float)` | `call(value)`。`type` で `float` / `int` に変換 | 入力欄＋「設定」ボタン。min/max はサーバー側でも検証 |
-| `DigitInput(label, call, digits=4, min=None, max=None, default=0, get=None)` | `call(int)`（「設定」ボタン押下時のみ） | 桁ごとに増減ボタンを持つ10進整数入力（既定4桁）。桁を変更すると値が青字になり未確定であることを示し、「設定」ボタンは値を変更した時のみ有効になる。「設定」で確定すると黒字に戻る。min/max はサーバー側でも検証し、拒否された場合は元の値（直前に確定した値）に戻る。`get`を指定すると、デバイスが`connected`になるたび（起動時のauto_open、または再接続時）に1回だけ呼ばれ、その結果を表示中の値として反映する（Toggle/Selectと異なり実機からの読み戻しに対応）。アッテネータの設定値のような、連続量ではない機器コードの入力を想定 |
+| `NumberInput(label, call, unit=None, min=None, max=None, step=None, default=None, type=float, get=None)` | `call(value)`。`type` で `float` / `int` に変換 | 入力欄＋「設定」ボタン。min/max はサーバー側でも検証。`get`未指定（既定）では「設定」は常に有効。`get`を指定すると、`DigitInput`と同じget/setの保留値管理になる: 入力値が直前の確定値と異なる間は青字になり、その間だけ「設定」と隣の「キャンセル」ボタンが有効になる（「キャンセル」は入力値を確定値に戻すだけでサーバーには問い合わせない）。`get`はデバイスが`connected`になるたびに呼ばれて初期値を反映し、「設定」成功後にも呼ばれて実際にデバイスが取った値を反映する |
+| `DigitInput(label, call, digits=4, min=None, max=None, default=0, get=None)` | `call(int)`（「設定」ボタン押下時のみ） | 桁ごとに増減ボタンを持つ10進整数入力（既定4桁）。桁を変更すると値が青字になり未確定であることを示し、その間だけ「設定」と隣の「キャンセル」ボタンが有効になる（「キャンセル」は表示を直前の確定値に戻すだけでサーバーには問い合わせない）。「設定」で確定すると黒字に戻る。min/max はサーバー側でも検証し、拒否された場合は元の値に戻る。`get`を指定すると、デバイスが`connected`になるたび（起動時のauto_open、または再接続時）と「設定」成功後に呼ばれ、その結果を表示中の値として反映する（Toggle/Selectと異なり実機からの読み戻しに対応）。アッテネータの設定値のような、連続量ではない機器コードの入力を想定 |
 | `Toggle(label, call, default=False)` | `call(bool)` | 切り替えた時点で呼ぶ |
 | `Select(label, call, options)` | `call(選択値)` | `options` はリスト、または `{表示名: 値}` の辞書 |
 | `TextInput(label, call, default="")` | `call(str)` | 入力欄＋「送信」ボタン |
