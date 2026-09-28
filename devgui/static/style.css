@@ -209,9 +209,20 @@ body {
 
 .digit-input {
   display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.digit-input-digits {
+  display: flex;
   align-items: center;
   gap: 0.35rem;
   flex-wrap: wrap;
+}
+
+.digit-input-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 
 .digit-col {
@@ -243,8 +254,13 @@ body {
 .gettable-number-input {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.gettable-number-input-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 
 .gettable-number-input input.pending {

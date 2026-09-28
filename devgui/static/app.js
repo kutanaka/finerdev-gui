@@ -343,6 +343,12 @@ function renderDigitInput(widget) {
   const container = document.createElement("div");
   container.className = "digit-input";
 
+  const digitsRow = document.createElement("div");
+  digitsRow.className = "digit-input-digits";
+
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "digit-input-actions";
+
   const digitCount = widget.digits;
   let confirmedValue = widget.default ?? 0;
   let pendingValue = confirmedValue;
@@ -398,7 +404,7 @@ function renderDigitInput(widget) {
     col.appendChild(upBtn);
     col.appendChild(valueEl);
     col.appendChild(downBtn);
-    container.appendChild(col);
+    digitsRow.appendChild(col);
     digitEls.push(valueEl);
   }
 
@@ -421,7 +427,7 @@ function renderDigitInput(widget) {
     }
     render();
   });
-  container.appendChild(setBtn);
+  actionsRow.appendChild(setBtn);
 
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
@@ -431,7 +437,10 @@ function renderDigitInput(widget) {
     pendingValue = confirmedValue;
     render();
   });
-  container.appendChild(cancelBtn);
+  actionsRow.appendChild(cancelBtn);
+
+  container.appendChild(digitsRow);
+  container.appendChild(actionsRow);
 
   widgetEnableCallbacks[widget.id] = (enabled) => {
     deviceEnabled = enabled;
@@ -484,6 +493,10 @@ function renderGettableNumberInput(widget) {
   }
 
   input.addEventListener("input", render);
+  container.appendChild(input);
+
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "gettable-number-input-actions";
 
   const setBtn = document.createElement("button");
   setBtn.type = "button";
@@ -498,8 +511,7 @@ function renderGettableNumberInput(widget) {
     input.value = confirmedValue;
     render();
   });
-  container.appendChild(input);
-  container.appendChild(setBtn);
+  actionsRow.appendChild(setBtn);
 
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
@@ -509,7 +521,9 @@ function renderGettableNumberInput(widget) {
     input.value = confirmedValue;
     render();
   });
-  container.appendChild(cancelBtn);
+  actionsRow.appendChild(cancelBtn);
+
+  container.appendChild(actionsRow);
 
   widgetEnableCallbacks[widget.id] = (enabled) => {
     deviceEnabled = enabled;
