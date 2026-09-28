@@ -20,7 +20,7 @@ Run with:
     python -m devgui --layout examples/layout_example.py
 """
 
-from devgui import Button, Category, Device, DigitInput, Display, NumberInput, Select, Toggle
+from devgui import Category, Device, DigitInput, Display, NumberInput, Select, Toggle
 from finerdev.loatt import loatt
 from finerdev.multiplier import mp
 from finerdev.sourcemeter import SoureMeter2400, SourceMeter2450
@@ -149,8 +149,12 @@ layout = [
                 "multiplier",
                 multiplier,
                 widgets=[
-                    Button("ON", call=multiplier.on),
-                    Button("OFF", call=multiplier.off),
+                    # `mp` exposes on()/off() as two separate no-arg methods
+                    # rather than a single set(bool) - off_call lets this
+                    # stay one slide-switch-style Toggle (design.md 4.3)
+                    # while the command log still shows whichever real
+                    # method actually ran (section 8.2).
+                    Toggle("出力ON/OFF", call=multiplier.on, off_call=multiplier.off),
                     Display("状態読み出し", call=multiplier.get, poll=2.0),
                 ],
                 instance_repr=multiplier_repr,

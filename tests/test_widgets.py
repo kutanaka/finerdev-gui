@@ -63,6 +63,24 @@ def test_toggle_default():
     assert t.default is False
 
 
+def test_toggle_off_call_defaults_to_none():
+    t = Toggle("On/Off", call=lambda v: None)
+    assert t.off_call is None
+
+
+def test_toggle_off_call_is_preserved():
+    on_fn = lambda: None
+    off_fn = lambda: None
+    t = Toggle("On/Off", call=on_fn, off_call=off_fn)
+    assert t.call is on_fn
+    assert t.off_call is off_fn
+
+
+def test_toggle_off_call_must_be_callable():
+    with pytest.raises(TypeError):
+        Toggle("On/Off", call=lambda: None, off_call="not callable")
+
+
 def test_text_input_default():
     t = TextInput("Cmd", call=lambda v: None)
     assert t.default == ""

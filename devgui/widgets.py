@@ -97,7 +97,22 @@ class DigitInput(Widget):
 
 @dataclass
 class Toggle(Widget):
+    """`call` is normally a single `Callable[[bool], Any]` (e.g.
+    `dev.output`). If the underlying device instead exposes two separate
+    no-arg methods for on/off (e.g. finerdev's `mp.on()`/`mp.off()`), give
+    the "on" method as `call` and the "off" method as `off_call` - devgui
+    then dispatches to whichever one matches the switch's new position, so
+    the command log (section 8.2) shows the real method that ran (e.g.
+    "multiplier.on() -> None") instead of a wrapping lambda's name.
+    """
+
     default: bool = False
+    off_call: Callable[[], Any] | None = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.off_call is not None and not callable(self.off_call):
+            raise TypeError(f"Toggle '{self.label}': off_call must be callable or None")
 
 
 @dataclass

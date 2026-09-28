@@ -7,8 +7,19 @@ from fastapi.testclient import TestClient
 from devgui.runtime.bus import BusManager
 from devgui.runtime.devices import DeviceManager, DeviceState
 from devgui.server import create_app
-from devgui.widgets import Button, Category, Device, DigitInput, Display, NumberInput, Select
+from devgui.widgets import Button, Category, Device, DigitInput, Display, NumberInput, Select, Toggle
 from examples.mock_devices import MockDevice
+
+
+class OnOffMock(MockDevice):
+    """Mimics finerdev's `mp`-style device: separate no-arg on()/off()
+    methods rather than a single set(bool) - for a Toggle's `off_call`."""
+
+    def on(self):
+        self.value = 1.0
+
+    def off(self):
+        self.value = 0.0
 
 
 class DualPurposeValue:
@@ -32,6 +43,7 @@ class Harness:
         self.psu = MockDevice()
         self.att_mock = MockDevice()
         self.synth_mock = MockDevice()
+        self.multiplier_mock = OnOffMock()
         self.synth_freq = DualPurposeValue(0.0)
         self.selected: list[object] = []
         self.att_values: list[int] = []
@@ -82,6 +94,18 @@ class Harness:
                                 unit="GHz",
                                 min=0,
                                 max=20,
+                            ),
+                        ],
+                        auto_open=False,
+                    ),
+                    Device(
+                        "Multiplier1",
+                        self.multiplier_mock,
+                        widgets=[
+                            Toggle(
+                                "出力ON/OFF",
+                                call=self.multiplier_mock.on,
+                                off_call=self.multiplier_mock.off,
                             ),
                         ],
                         auto_open=False,
@@ -243,6 +267,34 @@ def test_api_call_select_maps_display_key_to_value(harness):
         resp = client.post("/api/call/PSU1:2", json={"value": "High"}, headers=headers)
         assert resp.json() == {"ok": True}
         assert harness.selected == [2]
+
+
+def test_api_call_toggle_with_off_call_dispatches_on_and_off(harness):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        resp = client.post("/api/call/Multiplier1:0", json={"value": True}, headers=headers)
+        assert resp.json() == {"ok": True}
+        assert harness.multiplier_mock.value == 1.0
+
+        resp = client.post("/api/call/Multiplier1:0", json={"value": False}, headers=headers)
+        assert resp.json() == {"ok": True}
+        assert harness.multiplier_mock.value == 0.0
+
+
+def test_api_call_toggle_with_off_call_logs_real_method_names(harness):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()  # hello
+            ws.receive_json()  # snapshot
+
+            client.post("/api/call/Multiplier1:0", json={"value": True}, headers=headers)
+            on_entry = receive_until(ws, "command_log")
+            assert on_entry["text"] == "Multiplier1.on() -> None"
+
+            client.post("/api/call/Multiplier1:0", json={"value": False}, headers=headers)
+            off_entry = receive_until(ws, "command_log")
+            assert off_entry["text"] == "Multiplier1.off() -> None"
 
 
 def test_digit_input_is_serialized_with_digits_min_max(harness):

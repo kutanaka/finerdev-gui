@@ -265,12 +265,25 @@ function renderWidget(widget) {
       break;
     }
     case "Toggle": {
+      // Rendered as a sliding switch rather than a bare checkbox
+      // (design.md section 11): the checkbox itself still drives all
+      // state/enable-disable logic (data-operant, .checked, "change"),
+      // just visually hidden - see .switch/.switch-slider in style.css.
+      const switchLabel = document.createElement("label");
+      switchLabel.className = "switch";
+
       const input = document.createElement("input");
       input.type = "checkbox";
       input.checked = !!widget.default;
       input.dataset.operant = "true";
       input.addEventListener("change", () => callWidget(widget.id, input.checked));
-      wrap.appendChild(input);
+
+      const slider = document.createElement("span");
+      slider.className = "switch-slider";
+
+      switchLabel.appendChild(input);
+      switchLabel.appendChild(slider);
+      wrap.appendChild(switchLabel);
       break;
     }
     case "Select": {

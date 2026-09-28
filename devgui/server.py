@@ -150,39 +150,47 @@ def _serialize_layout(
     }
 
 
-def _invoke_widget(widget: Widget, raw_value: Any) -> tuple[Any, tuple[Any, ...]]:
-    """Returns (result, args) where `args` are the actual positional
-    arguments passed to `widget.call` - used by the command log (section
-    8.2) to show the real, coerced value rather than the raw request body."""
+def _invoke_widget(widget: Widget, raw_value: Any) -> tuple[Any, tuple[Any, ...], str]:
+    """Returns (result, args, method_name): `args` are the actual positional
+    arguments passed to whichever callable was actually invoked, and
+    `method_name` is that callable's `__name__` - used by the command log
+    (section 8.2) to show the real, coerced call rather than the raw
+    request body. A plain Toggle always invokes `widget.call`; a Toggle
+    with `off_call` set invokes whichever of `call`/`off_call` matches the
+    new switch position (section 4.3), so the log shows the real method
+    that ran (e.g. "on"/"off") instead of a wrapping lambda's name."""
     if isinstance(widget, Button):
-        return widget.call(), ()
+        return widget.call(), (), getattr(widget.call, "__name__", "call")
     if isinstance(widget, NumberInput):
         value = widget.type(raw_value)
         if widget.min is not None and value < widget.min:
             raise ValueError(f"value {value} is below min {widget.min}")
         if widget.max is not None and value > widget.max:
             raise ValueError(f"value {value} is above max {widget.max}")
-        return widget.call(value), (value,)
+        return widget.call(value), (value,), getattr(widget.call, "__name__", "call")
     if isinstance(widget, DigitInput):
         value = int(raw_value)
         if widget.min is not None and value < widget.min:
             raise ValueError(f"value {value} is below min {widget.min}")
         if widget.max is not None and value > widget.max:
             raise ValueError(f"value {value} is above max {widget.max}")
-        return widget.call(value), (value,)
+        return widget.call(value), (value,), getattr(widget.call, "__name__", "call")
     if isinstance(widget, Toggle):
         value = bool(raw_value)
-        return widget.call(value), (value,)
+        if widget.off_call is not None:
+            fn = widget.call if value else widget.off_call
+            return fn(), (), getattr(fn, "__name__", "call")
+        return widget.call(value), (value,), getattr(widget.call, "__name__", "call")
     if isinstance(widget, Select):
         if raw_value not in widget.options:
             raise ValueError(f"unknown option {raw_value!r}")
         mapped = widget.options[raw_value]
-        return widget.call(mapped), (mapped,)
+        return widget.call(mapped), (mapped,), getattr(widget.call, "__name__", "call")
     if isinstance(widget, TextInput):
         value = str(raw_value)
-        return widget.call(value), (value,)
+        return widget.call(value), (value,), getattr(widget.call, "__name__", "call")
     if isinstance(widget, Display):
-        return widget.call(), ()
+        return widget.call(), (), getattr(widget.call, "__name__", "call")
     raise TypeError(f"unsupported widget type {type(widget).__name__}")
 
 
@@ -476,19 +484,25 @@ def create_app(
         device, widget = entry
         raw_value = body.get("value")
         who = client_display_names.get(x_client_id, x_client_id or "unknown")
-        method_name = getattr(widget.call, "__name__", "call")
+        # Approximate: for a plain widget this is exactly the method that
+        # runs; for a dual-call Toggle it's only the "on" side, since which
+        # of call/off_call actually gets invoked isn't known until inside
+        # _invoke_widget - good enough for the rare failure-log case below,
+        # while the success path (the common case) uses the exact name
+        # _invoke_widget reports back.
+        fallback_method_name = getattr(widget.call, "__name__", "call")
 
-        def thunk() -> tuple[Any, tuple[Any, ...]]:
+        def thunk() -> tuple[Any, tuple[Any, ...], str]:
             return _invoke_widget(widget, raw_value)
 
         future = bus_manager.submit(device.bus, thunk, priority=Priority.HIGH)
         try:
-            result, call_args = await asyncio.wrap_future(future)
+            result, call_args, method_name = await asyncio.wrap_future(future)
         except Exception as exc:
             logger.exception("call %s by %s value=%r failed", widget_id, who, raw_value)
             _log_command(
                 device.name,
-                f"{device.name}.{method_name}({raw_value!r})  # {type(exc).__name__}: {exc}",
+                f"{device.name}.{fallback_method_name}({raw_value!r})  # {type(exc).__name__}: {exc}",
                 error=True,
             )
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

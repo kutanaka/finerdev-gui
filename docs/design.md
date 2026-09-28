@@ -143,7 +143,7 @@ layout = [
 | `Button(label, call, confirm=False)` | `call()` | `confirm=True` で実行前に確認ダイアログ |
 | `NumberInput(label, call, unit=None, min=None, max=None, step=None, default=None, type=float, get=None)` | `call(value)`。`type` で `float` / `int` に変換 | 入力欄＋「設定」ボタン。min/max はサーバー側でも検証。`get`未指定（既定）では「設定」は常に有効。`get`を指定すると、`DigitInput`と同じget/setの保留値管理になる: 入力値が直前の確定値と異なる間は青字になり、その間だけ「設定」と隣の「キャンセル」ボタンが有効になる（「キャンセル」は入力値を確定値に戻すだけでサーバーには問い合わせない）。`get`はデバイスが`connected`になるたびに呼ばれて初期値を反映し、「設定」成功後にも呼ばれて実際にデバイスが取った値を反映する |
 | `DigitInput(label, call, digits=4, min=None, max=None, default=0, get=None)` | `call(int)`（「設定」ボタン押下時のみ） | 桁ごとに増減ボタンを持つ10進整数入力（既定4桁）。桁を変更すると値が青字になり未確定であることを示し、その間だけ「設定」と隣の「キャンセル」ボタンが有効になる（「キャンセル」は表示を直前の確定値に戻すだけでサーバーには問い合わせない）。「設定」で確定すると黒字に戻る。min/max はサーバー側でも検証し、拒否された場合は元の値に戻る。`get`を指定すると、デバイスが`connected`になるたび（起動時のauto_open、または再接続時）と「設定」成功後に呼ばれ、その結果を表示中の値として反映する（Toggle/Selectと異なり実機からの読み戻しに対応）。アッテネータの設定値のような、連続量ではない機器コードの入力を想定 |
-| `Toggle(label, call, default=False)` | `call(bool)` | 切り替えた時点で呼ぶ |
+| `Toggle(label, call, default=False, off_call=None)` | `call(bool)`。`off_call`指定時は `call()`／`off_call()` のどちらか一方（引数なし） | 切り替えた時点で呼ぶ。画面上の見た目は左右にスライドするスイッチ（11章）。`off_call`は、実機がon/offを1つの`set(bool)`ではなく別々の無引数メソッド（例: `mp.on()`/`mp.off()`）として持つ場合に指定する。指定すると`call`は「on」側、`off_call`は「off」側の呼び出しとして扱われ、コマンドログ（8.2）には実際に呼ばれたメソッド名がそのまま出る |
 | `Select(label, call, options)` | `call(選択値)` | `options` はリスト、または `{表示名: 値}` の辞書 |
 | `TextInput(label, call, default="")` | `call(str)` | 入力欄＋「送信」ボタン |
 | `Display(label, call, unit=None, poll=1.0, fmt=None, visible_rows=5, max_rows=50)` | `call()` を `poll` 秒ごと | 戻り値を時刻付きでログ表示（8章） |
@@ -354,6 +354,7 @@ layout = [
 - タブ内: `Device` ごとのパネルをグリッド状（画面幅に応じて列数が変わるレスポンシブ）に並べる。
 - パネルヘッダー: デバイス名、状態表示（色付きバッジ）、接続・切断ボタン（open/closeがある場合）。`not_installed` はグレーのバッジ（例:「未実装」）で表示し、接続・切断ボタンは出さない。
 - パネル本体: 部品を定義順に縦に並べる。
+- `Toggle` は左右にスライドしてon/offを選ぶスイッチの外観で表示する（チェックボックスではない）。
 - ダイアログ: 強制取得要求（保持者側、カウントダウン付き）、待機表示（要求者側）、`confirm=True` のボタン確認。
 - 画面最下部: 操作コマンドログ（8.2）の固定表示エリア。タブ切り替えの影響を受けない。
 - WebSocket切断時は画面上に明示し、自動で再接続を試みる（指数バックオフ）。再接続後は `snapshot` で状態を復元する。
