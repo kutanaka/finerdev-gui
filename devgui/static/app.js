@@ -265,10 +265,17 @@ function renderWidget(widget) {
       break;
     }
     case "Toggle": {
-      // Rendered as a sliding switch rather than a bare checkbox
+      // Rendered as "ON [slide switch] OFF" rather than a bare checkbox
       // (design.md section 11): the checkbox itself still drives all
       // state/enable-disable logic (data-operant, .checked, "change"),
       // just visually hidden - see .switch/.switch-slider in style.css.
+      const switchWrap = document.createElement("div");
+      switchWrap.className = "switch-wrap";
+
+      const onText = document.createElement("span");
+      onText.className = "switch-text";
+      onText.textContent = "ON";
+
       const switchLabel = document.createElement("label");
       switchLabel.className = "switch";
 
@@ -276,14 +283,30 @@ function renderWidget(widget) {
       input.type = "checkbox";
       input.checked = !!widget.default;
       input.dataset.operant = "true";
-      input.addEventListener("change", () => callWidget(widget.id, input.checked));
 
       const slider = document.createElement("span");
       slider.className = "switch-slider";
 
+      const offText = document.createElement("span");
+      offText.className = "switch-text";
+      offText.textContent = "OFF";
+
+      const updateSwitchText = () => {
+        onText.classList.toggle("switch-text-active", input.checked);
+        offText.classList.toggle("switch-text-active", !input.checked);
+      };
+      input.addEventListener("change", () => {
+        updateSwitchText();
+        callWidget(widget.id, input.checked);
+      });
+      updateSwitchText();
+
       switchLabel.appendChild(input);
       switchLabel.appendChild(slider);
-      wrap.appendChild(switchLabel);
+      switchWrap.appendChild(onText);
+      switchWrap.appendChild(switchLabel);
+      switchWrap.appendChild(offText);
+      wrap.appendChild(switchWrap);
       break;
     }
     case "Select": {
