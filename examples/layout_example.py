@@ -69,7 +69,7 @@ def synth_widgets(dev):
 
 layout = [
     Category(
-        "MX",
+        "RX",
         [
             Device("SourceMeter1", source_meter1, bus=GPIB_BUS, widgets=source_meter_widgets(source_meter1)),
             Device("SourceMeter2", source_meter2, bus=GPIB_BUS, widgets=source_meter_widgets(source_meter2)),

@@ -1,8 +1,8 @@
 #tab,class,instance,type,addr,port,mode
-MX,SourceMeter2400,SourceMeter1,GPIB,25,*,active
-MX,SourceMeter2400,SourceMeter2,GPIB,18,*,active
-MX,SourceMeter2450,SourceMeter3,LAN,finer-sm3,*,active
-MX,SourceMeter2450,SourceMeter4,LAN,finer-sm4,*,active
+RX,SourceMeter2400,SourceMeter1,GPIB,25,*,active
+RX,SourceMeter2400,SourceMeter2,GPIB,18,*,active
+RX,SourceMeter2450,SourceMeter3,LAN,finer-sm3,*,active
+RX,SourceMeter2450,SourceMeter4,LAN,finer-sm4,*,active
 LO,loatt,LO att1,GPIB,8,*,active
 LO,loatt,LO att2,GPIB,9,*,active
 LO,loatt,LO att3,GPIB,*,*,NC

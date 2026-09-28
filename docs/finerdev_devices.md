@@ -40,10 +40,10 @@
 
 | tab (Category) | instance名 (Device.name) | 生成コード | bus |
 |---|---|---|---|
-| MX | SourceMeter1 | `SoureMeter2400(devid=25, ipAddr="prologix")` | `"gpib-prologix"` |
-| MX | SourceMeter2 | `SoureMeter2400(devid=18, ipAddr="prologix")` | `"gpib-prologix"` |
-| MX | SourceMeter3 | `SourceMeter2450(ipAddr="finer-sm3")` | `None`（LAN、独立） |
-| MX | SourceMeter4 | `SourceMeter2450(ipAddr="finer-sm4")` | `None`（LAN、独立） |
+| RX | SourceMeter1 | `SoureMeter2400(devid=25, ipAddr="prologix")` | `"gpib-prologix"` |
+| RX | SourceMeter2 | `SoureMeter2400(devid=18, ipAddr="prologix")` | `"gpib-prologix"` |
+| RX | SourceMeter3 | `SourceMeter2450(ipAddr="finer-sm3")` | `None`（LAN、独立） |
+| RX | SourceMeter4 | `SourceMeter2450(ipAddr="finer-sm4")` | `None`（LAN、独立） |
 | LO | LO att1 | `loatt(devid=8)` | `"gpib-prologix"` |
 | LO | LO att2 | `loatt(devid=9)` | `"gpib-prologix"` |
 | LO | LO att3 | `instance=None`（`not_installed`。addr未定のため） | — |
