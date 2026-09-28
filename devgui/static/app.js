@@ -265,7 +265,7 @@ function renderWidget(widget) {
       break;
     }
     case "Toggle": {
-      // Rendered as "ON [slide switch] OFF" rather than a bare checkbox
+      // Rendered as "OFF [slide switch] ON" rather than a bare checkbox
       // (design.md section 11): the checkbox itself still drives all
       // state/enable-disable logic (data-operant, .checked, "change"),
       // just visually hidden - see .switch/.switch-slider in style.css.
@@ -303,9 +303,9 @@ function renderWidget(widget) {
 
       switchLabel.appendChild(input);
       switchLabel.appendChild(slider);
-      switchWrap.appendChild(onText);
-      switchWrap.appendChild(switchLabel);
       switchWrap.appendChild(offText);
+      switchWrap.appendChild(switchLabel);
+      switchWrap.appendChild(onText);
       wrap.appendChild(switchWrap);
       break;
     }

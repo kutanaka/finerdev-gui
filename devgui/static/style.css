@@ -210,7 +210,7 @@ body {
   font: inherit;
 }
 
-/* Toggle (design.md section 11): "ON [slide switch] OFF" rather than a
+/* Toggle (design.md section 11): "OFF [slide switch] ON" rather than a
    bare checkbox. The checkbox stays in the DOM and keeps driving all real
    state (checked/disabled/change) - only visually hidden - so it needs no
    change to how enable/disable or click handling works. */
@@ -233,7 +233,7 @@ body {
 .switch {
   position: relative;
   display: inline-block;
-  width: 3.6rem;
+  width: 7.2rem;
   height: 2rem;
   flex-shrink: 0;
 }
@@ -274,7 +274,7 @@ body {
 }
 
 .switch input:checked + .switch-slider::before {
-  transform: translateX(1.6rem);
+  transform: translateX(5.2rem);
 }
 
 .switch input:disabled + .switch-slider {
