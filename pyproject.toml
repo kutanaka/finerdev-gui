@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "devgui"
+version = "0.1.0"
+description = "LAN web GUI for operating lab instruments via an existing device-control library."
+requires-python = ">=3.10"
+authors = [{ email = "tanakakunihiko777@gmail.com" }]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "websockets>=13",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["devgui"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

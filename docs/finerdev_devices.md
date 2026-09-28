@@ -53,6 +53,6 @@
 
 **バス設計の要点**: `SourceMeter1/2`と`LO att1/2`（将来`LO att3/4`も）は全て物理GPIB-Ethernetブリッジ`prologix`を共有するため、同一`bus`名（`"gpib-prologix"`）を明示指定する。指定しないとデバイス名ごとに別スレッドから同じ物理アダプタへ同時アクセスしてしまい、GPIB通信が破損する危険がある。LAN接続の各デバイス（SourceMeter3/4, synth×2, multiplier）はそれぞれ独立したTCPソケットなので`bus`指定不要（デフォルトのデバイス名別バスでよい）。
 
-**未確認の前提**: GPIBデバイスの`ipAddr="prologix"`は`loatt`モジュール内のハードコード定数`_IPADDR_EGPIB`から類推した値。`SoureMeter2400`はこの値を内部で持たず呼び出し側が渡す必要があるため、実際に同じホスト名でよいか要確認。
+**確認済み（2026-09-28）**: GPIBデバイスの`ipAddr`はすべて`"prologix"`でよい（ユーザー確認済み）。
 
 **`LO att3`/`LO att4`（未接続プレースホルダー）**: `mode=NC`かつ`addr=*`で接続情報が未定のため、実機インスタンスを生成できない。ユーザーの希望により、design.md を拡張して `Device(instance=None)` を「未実装（`not_installed`）」状態のプレースホルダーとして表示できるようにした（design.md §4.2, §6.1, §6.3, §11 に追記済み）。接続先が決まり次第、`instance=loatt(devid=...)` に差し替える想定。
