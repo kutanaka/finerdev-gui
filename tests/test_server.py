@@ -231,6 +231,25 @@ def test_static_index_and_assets_are_served(harness):
         style_css = client.get("/style.css")
         assert style_css.status_code == 200
 
+        # Regression guard: browsers may heuristically cache a static file
+        # with no Cache-Control and skip revalidation, so a CSS/JS fix would
+        # silently not take effect until a hard reload (see the [hidden]
+        # override rule below, and its bug history in style.css).
+        assert index.headers.get("cache-control") == "no-cache"
+        assert app_js.headers.get("cache-control") == "no-cache"
+        assert style_css.headers.get("cache-control") == "no-cache"
+
+
+def test_style_css_restores_hidden_attribute_on_display_setting_classes(harness):
+    with TestClient(harness.app) as client:
+        style_css = client.get("/style.css").text
+        # .modal-overlay/.panel-grid set `display` directly, which has equal
+        # CSS specificity to the browser default `[hidden] { display: none }`
+        # and would win the tie (author stylesheet beats UA stylesheet) -
+        # silently breaking every el.hidden = true/false toggle in app.js.
+        assert "[hidden]" in style_css
+        assert "display: none !important" in style_css
+
 
 def test_operator_acquire_when_free(harness):
     with TestClient(harness.app) as client:

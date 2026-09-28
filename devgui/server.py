@@ -64,6 +64,21 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+class _RevalidateStaticFiles(StaticFiles):
+    """Starlette's StaticFiles sends no Cache-Control, so browsers may
+    heuristically cache index.html/app.js/style.css and skip revalidation
+    entirely for a while - a real problem here, since a devgui upgrade's
+    CSS/JS fix would then silently not take effect until a hard reload.
+    `no-cache` forces revalidation on every load (via the ETag/
+    Last-Modified Starlette already sets), which is cheap - a 304 with no
+    body - and guarantees an updated file is always picked up."""
+
+    def file_response(self, *args: Any, **kwargs: Any):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def _serialize_widget(widget: Widget) -> dict[str, Any]:
     base: dict[str, Any] = {"id": widget.id, "type": type(widget).__name__, "label": widget.label}
     if isinstance(widget, Button):
@@ -565,6 +580,6 @@ def create_app(
 
     # Registered last: falls back to serving devgui/static/* (index.html at
     # "/") for anything not matched by the API/WebSocket routes above.
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    app.mount("/", _RevalidateStaticFiles(directory=STATIC_DIR, html=True), name="static")
 
     return app

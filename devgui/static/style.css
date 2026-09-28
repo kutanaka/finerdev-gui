@@ -11,6 +11,17 @@
   box-sizing: border-box;
 }
 
+/* Several elements below (.panel-grid, .modal-overlay, ...) set `display`
+   directly on a class. That rule and the browser default `[hidden] {
+   display: none}` have equal specificity, and this stylesheet wins the
+   tie - so toggling the `hidden` property/attribute alone would not
+   actually hide them. `!important` here guarantees `hidden` always wins,
+   regardless of what any class sets. Toggle visibility with `el.hidden`,
+   never `style.display`. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, sans-serif;
