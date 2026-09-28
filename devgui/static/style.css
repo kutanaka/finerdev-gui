@@ -105,6 +105,9 @@ body {
 
 #panels {
   padding: 1rem;
+  /* Room for the fixed #command-log-bar so the last row of panels never
+     hides behind it (the bar's own height is set below). */
+  padding-bottom: 12rem;
 }
 
 .panel-grid {
@@ -366,4 +369,58 @@ body {
 .modal-actions button {
   padding: 0.4rem 0.9rem;
   font: inherit;
+}
+
+/* Global command log (docs/design.md section 8.2): fixed at the bottom of
+   the screen, shared across all tabs/categories - not part of any single
+   device panel. */
+#command-log-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  background: #111827;
+  color: #e5e7eb;
+  border-top: 1px solid #374151;
+  z-index: 500;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+#command-log-header {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-bottom: 1px solid #374151;
+  flex-shrink: 0;
+}
+
+.command-log {
+  max-height: 10rem;
+  overflow-y: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.75rem;
+}
+
+.command-log-row {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.1rem 0;
+  white-space: nowrap;
+}
+
+.command-log-time {
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+.command-log-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.command-log-row.command-log-error .command-log-text {
+  color: #f87171;
 }

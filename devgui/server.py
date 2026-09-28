@@ -18,8 +18,10 @@ import logging
 import secrets
 import socket
 import threading
+from collections import deque
 from concurrent.futures import Future
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +65,12 @@ from devgui.widgets import (
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+COMMAND_LOG_MAX_ROWS = 200
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="milliseconds")
 
 
 class _RevalidateStaticFiles(StaticFiles):
@@ -142,33 +150,39 @@ def _serialize_layout(
     }
 
 
-def _invoke_widget(widget: Widget, raw_value: Any) -> Any:
+def _invoke_widget(widget: Widget, raw_value: Any) -> tuple[Any, tuple[Any, ...]]:
+    """Returns (result, args) where `args` are the actual positional
+    arguments passed to `widget.call` - used by the command log (section
+    8.2) to show the real, coerced value rather than the raw request body."""
     if isinstance(widget, Button):
-        return widget.call()
+        return widget.call(), ()
     if isinstance(widget, NumberInput):
         value = widget.type(raw_value)
         if widget.min is not None and value < widget.min:
             raise ValueError(f"value {value} is below min {widget.min}")
         if widget.max is not None and value > widget.max:
             raise ValueError(f"value {value} is above max {widget.max}")
-        return widget.call(value)
+        return widget.call(value), (value,)
     if isinstance(widget, DigitInput):
         value = int(raw_value)
         if widget.min is not None and value < widget.min:
             raise ValueError(f"value {value} is below min {widget.min}")
         if widget.max is not None and value > widget.max:
             raise ValueError(f"value {value} is above max {widget.max}")
-        return widget.call(value)
+        return widget.call(value), (value,)
     if isinstance(widget, Toggle):
-        return widget.call(bool(raw_value))
+        value = bool(raw_value)
+        return widget.call(value), (value,)
     if isinstance(widget, Select):
         if raw_value not in widget.options:
             raise ValueError(f"unknown option {raw_value!r}")
-        return widget.call(widget.options[raw_value])
+        mapped = widget.options[raw_value]
+        return widget.call(mapped), (mapped,)
     if isinstance(widget, TextInput):
-        return widget.call(str(raw_value))
+        value = str(raw_value)
+        return widget.call(value), (value,)
     if isinstance(widget, Display):
-        return widget.call()
+        return widget.call(), ()
     raise TypeError(f"unsupported widget type {type(widget).__name__}")
 
 
@@ -229,6 +243,7 @@ def create_app(
     loop_holder: dict[str, asyncio.AbstractEventLoop] = {}
     hostname_cache: dict[str, str | None] = {}
     client_display_names: dict[str, str] = {}
+    command_log: deque[dict[str, Any]] = deque(maxlen=COMMAND_LOG_MAX_ROWS)
     operator = OperatorManager(
         idle_timeout=operator_idle_timeout,
         disconnect_grace=operator_disconnect_grace,
@@ -263,8 +278,37 @@ def create_app(
             loop,
         )
 
-    def _track(name: str, future: Future) -> None:
+    def _log_command(device_name: str, text: str, *, error: bool = False) -> None:
+        """Append one line to the global, all-tabs command log (section
+        8.2) and push it to already-connected clients; newly connecting
+        clients get the buffered history via the `snapshot` message."""
+        entry = {"t": _now_iso(), "device": device_name, "text": text, "error": error}
+        command_log.append(entry)
+        loop = loop_holder.get("loop")
+        if loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(_broadcast({"type": "command_log", **entry}), loop)
+
+    def _log_call_result(device_name: str, call_text: str, future: Future) -> None:
+        exc = future.exception()
+        if exc is not None:
+            _log_command(device_name, f"{call_text}  # {type(exc).__name__}: {exc}", error=True)
+        else:
+            _log_command(device_name, f"{call_text} -> {future.result()!r}")
+
+    def _track_close(name: str, future: Future) -> None:
         future.add_done_callback(lambda f: _broadcast_device_state(name))
+        future.add_done_callback(lambda f: _log_call_result(name, f"{name}.close()", f))
+
+    # Record instance construction up front (section 8.2). layout.py builds
+    # each `instance` itself before Device() ever sees it, so this is the
+    # closest devgui can get to "when" - there is no hook into the user's
+    # own constructor call. No clients are connected yet at this point, so
+    # `_log_command` just seeds the ring buffer for the first `snapshot`.
+    for category in layout:
+        for device in category.devices:
+            if device.instance is not None:
+                _log_command(device.name, f"{device.name} = {type(device.instance).__name__}(...)")
 
     def _broadcast_widget_value(widget_id: str, value: Any) -> None:
         loop = loop_holder.get("loop")
@@ -290,18 +334,23 @@ def create_app(
         getter = getattr(widget, "get", None)
         if getter is None:
             return
+        method_name = getattr(getter, "__name__", "get")
+        call_text = f"{device.name}.{method_name}()"
 
         def on_done(f: Future) -> None:
             if f.exception() is not None:
                 logger.warning("failed to read value for %s: %s", widget.id, f.exception())
+                _log_call_result(device.name, call_text, f)
                 return
             try:
                 value = _coerce_get_result(widget, f.result())
             except (TypeError, ValueError):
                 logger.warning("%s: get() returned an incompatible value", widget.id)
+                _log_command(device.name, f"{call_text} -> {f.result()!r}  # incompatible value", error=True)
                 return
             widget.default = value
             _broadcast_widget_value(widget.id, value)
+            _log_command(device.name, f"{call_text} -> {value!r}")
 
         bus_manager.submit(device.bus, getter, priority=Priority.LOW).add_done_callback(on_done)
 
@@ -315,6 +364,7 @@ def create_app(
     def _track_open(device: Device, future: Future) -> None:
         def on_done(f: Future) -> None:
             _broadcast_device_state(device.name)
+            _log_call_result(device.name, f"{device.name}.open()", f)
             if f.exception() is None:
                 _read_gettable_widgets_for_device(device)
 
@@ -422,17 +472,25 @@ def create_app(
         device, widget = entry
         raw_value = body.get("value")
         who = client_display_names.get(x_client_id, x_client_id or "unknown")
+        method_name = getattr(widget.call, "__name__", "call")
 
-        def thunk() -> Any:
+        def thunk() -> tuple[Any, tuple[Any, ...]]:
             return _invoke_widget(widget, raw_value)
 
         future = bus_manager.submit(device.bus, thunk, priority=Priority.HIGH)
         try:
-            result = await asyncio.wrap_future(future)
+            result, call_args = await asyncio.wrap_future(future)
         except Exception as exc:
             logger.exception("call %s by %s value=%r failed", widget_id, who, raw_value)
+            _log_command(
+                device.name,
+                f"{device.name}.{method_name}({raw_value!r})  # {type(exc).__name__}: {exc}",
+                error=True,
+            )
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         logger.info("call %s by %s value=%r -> ok", widget_id, who, raw_value)
+        args_text = ", ".join(repr(a) for a in call_args)
+        _log_command(device.name, f"{device.name}.{method_name}({args_text}) -> {result!r}")
         if isinstance(widget, (DigitInput, NumberInput)) and widget.get is not None:
             # Re-read rather than trust the value we just sent, in case the
             # device clamped/rounded it (section 4.3).
@@ -484,7 +542,7 @@ def create_app(
         except (DeviceNotInstalledError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         _broadcast_device_state(name)
-        _track(name, future)
+        _track_close(name, future)
         try:
             await asyncio.wrap_future(future)
         except Exception as exc:
@@ -628,6 +686,7 @@ def create_app(
                         for name, rt in device_manager.runtimes.items()
                     },
                     "displays": {wid: poller.get_log(wid) for wid in display_ids},
+                    "command_log": list(command_log),
                     "operator": operator.snapshot(),
                 }
             )

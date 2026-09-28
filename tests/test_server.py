@@ -127,6 +127,17 @@ def wait_until(predicate, timeout=2.0):
     return predicate()
 
 
+def receive_until(ws, want_type, max_messages=20):
+    """Pull websocket messages until one of `want_type` shows up, skipping
+    any interleaved messages (device_state, display_entry from polling,
+    other command_log lines, ...) along the way."""
+    for _ in range(max_messages):
+        msg = ws.receive_json(mode="text")
+        if msg["type"] == want_type:
+            return msg
+    raise AssertionError(f"did not receive a {want_type!r} message within {max_messages} tries")
+
+
 def operator_headers(client, client_id="test-client"):
     resp = client.post("/api/operator/acquire", headers={"X-Client-Id": client_id})
     assert resp.status_code == 200, resp.text
@@ -293,8 +304,12 @@ def test_digit_input_get_broadcasts_widget_value_on_connect(harness):
 
             client.post("/api/devices/Att1/open", headers=headers)
 
+            # device_state (connecting), device_state (connected),
+            # command_log (open()), widget_value (get-on-connect),
+            # command_log (get()) - the command log (section 8.2) means
+            # widget_value is no longer the only message that follows.
             messages = []
-            for _ in range(3):
+            for _ in range(5):
                 messages.append(ws.receive_json(mode="text"))
             widget_value_msgs = [m for m in messages if m["type"] == "widget_value"]
             assert widget_value_msgs == [
@@ -354,8 +369,14 @@ def test_number_input_get_broadcasts_widget_value_after_set(harness):
 
             client.post("/api/call/Synth1:0", json={"value": 7.25}, headers=headers)
 
-            message = ws.receive_json(mode="text")
-            assert message == {"type": "widget_value", "widget_id": "Synth1:0", "value": 7.25}
+            # command_log (the set() call itself), widget_value
+            # (get-after-set), command_log (the get() call) - see section
+            # 8.2; widget_value is no longer the only message sent back.
+            messages = [ws.receive_json(mode="text") for _ in range(3)]
+            widget_value_msgs = [m for m in messages if m["type"] == "widget_value"]
+            assert widget_value_msgs == [
+                {"type": "widget_value", "widget_id": "Synth1:0", "value": 7.25}
+            ]
 
 
 def test_api_call_unknown_widget_404(harness):
@@ -493,6 +514,73 @@ def test_websocket_hello_and_snapshot(harness):
             }
 
 
+def test_websocket_snapshot_includes_instance_creation_command_log(harness):
+    with TestClient(harness.app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()  # hello
+            snapshot = ws.receive_json()
+
+            by_device = {entry["device"]: entry for entry in snapshot["command_log"]}
+            assert by_device["PSU1"]["text"] == "PSU1 = MockDevice(...)"
+            assert by_device["Att1"]["text"] == "Att1 = MockDevice(...)"
+            assert by_device["Synth1"]["text"] == "Synth1 = MockDevice(...)"
+            assert "LOatt3" not in by_device  # instance=None: nothing was constructed
+
+
+def test_api_call_broadcasts_command_log_entry(harness):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()  # hello
+            ws.receive_json()  # snapshot
+
+            client.post("/api/call/PSU1:1", json={"value": 5}, headers=headers)  # Voltage
+
+            entry = receive_until(ws, "command_log")
+            assert entry["device"] == "PSU1"
+            assert entry["text"] == "PSU1.set(5.0) -> None"
+            assert entry["error"] is False
+
+
+def test_api_call_failure_broadcasts_command_log_error_entry(harness):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()  # hello
+            ws.receive_json()  # snapshot
+
+            client.post("/api/call/PSU1:1", json={"value": 999}, headers=headers)  # out of range
+
+            entry = receive_until(ws, "command_log")
+            assert entry["device"] == "PSU1"
+            assert entry["error"] is True
+            assert "PSU1.set(999" in entry["text"]
+            assert "ValueError" in entry["text"]
+
+
+def test_device_open_and_close_emit_command_log_entries(harness):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()  # hello
+            ws.receive_json()  # snapshot
+
+            client.post("/api/devices/PSU1/open", headers=headers)
+            opened = receive_until(ws, "command_log")
+            assert opened == {
+                "type": "command_log",
+                "t": opened["t"],
+                "device": "PSU1",
+                "text": "PSU1.open() -> None",
+                "error": False,
+            }
+
+            client.post("/api/devices/PSU1/close", headers=headers)
+            closed = receive_until(ws, "command_log")
+            assert closed["device"] == "PSU1"
+            assert closed["text"] == "PSU1.close() -> None"
+
+
 def test_websocket_receives_operator_state_broadcast_on_acquire_and_release(harness):
     with TestClient(harness.app) as client:
         with client.websocket_connect("/ws") as ws:
@@ -527,6 +615,7 @@ def test_websocket_receives_display_entry_after_device_connects(harness):
             client.post("/api/devices/PSU1/open", headers=headers)
             ws.receive_json()  # device_state: connecting
             ws.receive_json()  # device_state: connected
+            ws.receive_json()  # command_log: PSU1.open() -> ... (section 8.2)
 
             entry = ws.receive_json(mode="text")
             assert entry["type"] == "display_entry"

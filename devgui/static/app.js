@@ -812,6 +812,51 @@ function appendDisplayEntry(widgetId, entry) {
   }
 }
 
+// --- global command log (design.md section 8.2) ---
+// Shared across all tabs/categories - unlike a per-Display log, this is a
+// single fixed panel at the bottom of the screen showing every issued
+// open()/close()/call()/get() (and, once at startup, each device's
+// instance construction), regardless of which tab is active.
+
+const COMMAND_LOG_MAX_ROWS = 200;
+
+function buildCommandLogRow(entry) {
+  const row = document.createElement("div");
+  row.className = entry.error ? "command-log-row command-log-error" : "command-log-row";
+
+  const time = document.createElement("span");
+  time.className = "command-log-time";
+  time.textContent = formatClock(entry.t);
+
+  const text = document.createElement("span");
+  text.className = "command-log-text";
+  text.textContent = entry.text;
+
+  row.appendChild(time);
+  row.appendChild(text);
+  return row;
+}
+
+function prependCommandLogEntry(entry) {
+  const el = document.getElementById("command-log");
+  if (!el) return;
+
+  const atTop = el.scrollTop <= 2;
+  const prevScrollHeight = el.scrollHeight;
+
+  el.insertBefore(buildCommandLogRow(entry), el.firstChild);
+
+  while (el.children.length > COMMAND_LOG_MAX_ROWS) {
+    el.removeChild(el.lastChild);
+  }
+
+  if (atTop) {
+    el.scrollTop = 0;
+  } else {
+    el.scrollTop += el.scrollHeight - prevScrollHeight;
+  }
+}
+
 // --- forced takeover (design.md section 9.4) ---
 
 async function requestTakeover() {
@@ -910,6 +955,7 @@ function handleWsMessage(message) {
       Object.entries(message.displays || {}).forEach(([widgetId, entries]) => {
         entries.forEach((entry) => appendDisplayEntry(widgetId, entry));
       });
+      (message.command_log || []).forEach((entry) => prependCommandLogEntry(entry));
       applyOperatorInfo(message.operator);
       break;
     case "device_state":
@@ -921,6 +967,9 @@ function handleWsMessage(message) {
         value: message.value,
         error: message.error,
       });
+      break;
+    case "command_log":
+      prependCommandLogEntry(message);
       break;
     case "widget_value": {
       const controller = gettableWidgetControllers[message.widget_id];
