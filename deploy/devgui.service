@@ -1,0 +1,18 @@
+[Unit]
+Description=devgui - lab instrument web GUI
+After=network.target
+
+[Service]
+Type=simple
+User=devgui
+Group=devgui
+WorkingDirectory=/opt/devgui
+# Add any Environment= lines your own device-control library needs here.
+ExecStart=/opt/devgui/.venv/bin/python -m devgui --layout /opt/devgui/layout.py --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

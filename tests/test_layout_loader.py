@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from devgui.layout_loader import LayoutLoadError, LayoutValidationError, load_layout
+from devgui.layout_loader import (
+    LayoutLoadError,
+    LayoutValidationError,
+    load_layout,
+    load_layout_and_settings,
+)
+from devgui.settings import Settings
 
 FIXTURES = Path(__file__).parent / "fixtures" / "layouts"
 
@@ -98,3 +104,50 @@ layout = [
     layout = load_layout(path)
     ids = [w.id for category in layout for device in category.devices for w in device.widgets]
     assert len(ids) == len(set(ids))
+
+
+def test_load_layout_and_settings_defaults_when_absent():
+    layout, settings = load_layout_and_settings(FIXTURES / "valid_minimal.py")
+    assert len(layout) == 1
+    assert settings == Settings()
+
+
+def test_load_layout_and_settings_uses_declared_settings(write_layout):
+    source = """
+from devgui import Category, Device, Settings
+
+layout = [Category("A", [Device("D1", object(), widgets=[])])]
+settings = Settings(port=9000, title="lab")
+"""
+    path = write_layout(source)
+    layout, settings = load_layout_and_settings(path)
+    assert settings.port == 9000
+    assert settings.title == "lab"
+
+
+def test_load_layout_and_settings_rejects_wrong_type(write_layout):
+    source = """
+from devgui import Category
+
+layout = []
+settings = "not a Settings instance"
+"""
+    path = write_layout(source)
+    with pytest.raises(LayoutLoadError):
+        load_layout_and_settings(path)
+
+
+def test_load_layout_only_imports_module_once(write_layout, tmp_path):
+    marker = tmp_path / "import_count.txt"
+    marker.write_text("")
+    source = f"""
+from devgui import Category
+
+with open({str(marker)!r}, "a") as fp:
+    fp.write("x")
+
+layout = []
+"""
+    path = write_layout(source)
+    load_layout_and_settings(path)
+    assert marker.read_text() == "x"

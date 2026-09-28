@@ -105,8 +105,11 @@ def _serialize_device(device: Device, runtime: DeviceRuntime) -> dict[str, Any]:
     }
 
 
-def _serialize_layout(layout: list[Category], device_manager: DeviceManager) -> dict[str, Any]:
+def _serialize_layout(
+    layout: list[Category], device_manager: DeviceManager, title: str
+) -> dict[str, Any]:
     return {
+        "title": title,
         "categories": [
             {
                 "title": category.title,
@@ -184,6 +187,7 @@ def create_app(
     operator_disconnect_grace: float = 30.0,
     operator_takeover_wait: float = 10.0,
     operator_takeover_cooldown: float = 30.0,
+    title: str = "devgui",
 ) -> FastAPI:
     widgets_by_id: dict[str, tuple[Device, Widget]] = {
         widget.id: (device, widget)
@@ -322,13 +326,14 @@ def create_app(
 
     @app.get("/api/layout")
     async def api_layout() -> dict[str, Any]:
-        return _serialize_layout(layout, device_manager)
+        return _serialize_layout(layout, device_manager, title)
 
     @app.post("/api/call/{widget_id}")
     async def api_call(
         widget_id: str,
         body: dict[str, Any] = Body(default={}),
         x_operator_token: str | None = Header(default=None),
+        x_client_id: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_operator(x_operator_token)
         entry = widgets_by_id.get(widget_id)
@@ -336,6 +341,7 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"unknown widget '{widget_id}'")
         device, widget = entry
         raw_value = body.get("value")
+        who = client_display_names.get(x_client_id, x_client_id or "unknown")
 
         def thunk() -> Any:
             return _invoke_widget(widget, raw_value)
@@ -344,16 +350,21 @@ def create_app(
         try:
             result = await asyncio.wrap_future(future)
         except Exception as exc:
+            logger.exception("call %s by %s value=%r failed", widget_id, who, raw_value)
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        logger.info("call %s by %s value=%r -> ok", widget_id, who, raw_value)
         if isinstance(widget, Display):
             return {"ok": True, "result": result}
         return {"ok": True}
 
     @app.post("/api/devices/{name}/open")
     async def api_device_open(
-        name: str, x_operator_token: str | None = Header(default=None)
+        name: str,
+        x_operator_token: str | None = Header(default=None),
+        x_client_id: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_operator(x_operator_token)
+        who = client_display_names.get(x_client_id, x_client_id or "unknown")
         try:
             runtime = device_manager.get(name)
         except KeyError:
@@ -367,14 +378,19 @@ def create_app(
         try:
             await asyncio.wrap_future(future)
         except Exception as exc:
+            logger.exception("open %s by %s failed", name, who)
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        logger.info("open %s by %s -> ok", name, who)
         return {"ok": True}
 
     @app.post("/api/devices/{name}/close")
     async def api_device_close(
-        name: str, x_operator_token: str | None = Header(default=None)
+        name: str,
+        x_operator_token: str | None = Header(default=None),
+        x_client_id: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_operator(x_operator_token)
+        who = client_display_names.get(x_client_id, x_client_id or "unknown")
         try:
             runtime = device_manager.get(name)
         except KeyError:
@@ -388,7 +404,9 @@ def create_app(
         try:
             await asyncio.wrap_future(future)
         except Exception as exc:
+            logger.exception("close %s by %s failed", name, who)
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        logger.info("close %s by %s -> ok", name, who)
         return {"ok": True}
 
     @app.post("/api/operator/acquire")

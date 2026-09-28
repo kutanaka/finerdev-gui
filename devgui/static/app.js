@@ -21,9 +21,17 @@ const deviceElements = {};
 // widget id -> { container, unit, maxRows }
 const displayElements = {};
 
+// widget id -> owning device name, for routing a failed call's error to
+// its panel (design.md section 10: "該当パネルに直近のエラーを表示する").
+const widgetOwner = {};
+
 async function loadLayout() {
   const res = await fetch("/api/layout");
   state.layout = await res.json();
+  if (state.layout.title) {
+    document.getElementById("app-title").textContent = state.layout.title;
+    document.title = state.layout.title;
+  }
   renderTabs();
 }
 
@@ -111,7 +119,10 @@ function renderDevicePanel(device) {
 
   const body = document.createElement("div");
   body.className = "device-body";
-  device.widgets.forEach((widget) => body.appendChild(renderWidget(widget)));
+  device.widgets.forEach((widget) => {
+    widgetOwner[widget.id] = device.name;
+    body.appendChild(renderWidget(widget));
+  });
   panel.appendChild(body);
 
   deviceElements[device.name] = { panel, badge, openBtn, closeBtn, errorEl };
@@ -312,10 +323,18 @@ async function callWidget(widgetId, value) {
     const body = await res.json();
     if (!body.ok) {
       showToast(`エラー: ${body.error}`, true);
+      showPanelError(widgetOwner[widgetId], body.error);
     }
   } catch (err) {
     showToast(`通信エラー: ${err}`, true);
   }
+}
+
+function showPanelError(deviceName, message) {
+  const el = deviceElements[deviceName];
+  if (!el) return;
+  el.errorEl.hidden = false;
+  el.errorEl.textContent = message;
 }
 
 async function callDeviceAction(name, action) {
@@ -464,13 +483,26 @@ function setWsStatus(connected) {
   el.className = connected ? "ws-status ws-connected" : "ws-status ws-disconnected";
 }
 
+const RECONNECT_INITIAL_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 30000;
+let reconnectDelayMs = RECONNECT_INITIAL_DELAY_MS;
+
 function connectWebSocket() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
   state.ws = ws;
 
-  ws.addEventListener("open", () => setWsStatus(true));
-  ws.addEventListener("close", () => setWsStatus(false));
+  ws.addEventListener("open", () => {
+    setWsStatus(true);
+    reconnectDelayMs = RECONNECT_INITIAL_DELAY_MS; // reset backoff once we're back
+  });
+  ws.addEventListener("close", () => {
+    setWsStatus(false);
+    // Reconnecting re-sends hello + snapshot, which restores all state
+    // (design.md section 11): device states, Display logs, operator status.
+    setTimeout(connectWebSocket, reconnectDelayMs);
+    reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_DELAY_MS);
+  });
   ws.addEventListener("error", () => setWsStatus(false));
   ws.addEventListener("message", (event) => {
     handleWsMessage(JSON.parse(event.data));

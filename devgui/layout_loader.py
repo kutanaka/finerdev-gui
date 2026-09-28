@@ -14,6 +14,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from devgui.settings import Settings
 from devgui.widgets import Category
 
 
@@ -30,6 +31,16 @@ class LayoutValidationError(LayoutError):
 
 
 def load_layout(path: str | Path) -> list[Category]:
+    layout, _settings = load_layout_and_settings(path)
+    return layout
+
+
+def load_layout_and_settings(path: str | Path) -> tuple[list[Category], Settings]:
+    """Like `load_layout`, but also returns the optional `settings =
+    Settings(...)` layout.py may define (section 4.1/12), defaulting to
+    `Settings()` if absent. Imports layout.py exactly once - a second,
+    separate import could re-run side effects (e.g. it may construct real
+    device instances at module scope)."""
     resolved = Path(path).resolve()
     if not resolved.is_file():
         raise LayoutLoadError(f"layout.py: file not found: {resolved}")
@@ -82,4 +93,13 @@ def load_layout(path: str | Path) -> list[Category]:
                 raise error
             seen[device.name] = cat_index
 
-    return layout
+    settings = getattr(module, "settings", None)
+    if settings is None:
+        settings = Settings()
+    elif not isinstance(settings, Settings):
+        raise LayoutLoadError(
+            f"layout.py: 'settings' must be a devgui.Settings instance, "
+            f"got {type(settings).__name__}"
+        )
+
+    return layout, settings

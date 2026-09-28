@@ -1,3 +1,4 @@
+import logging
 import time
 
 import pytest
@@ -11,7 +12,7 @@ from examples.mock_devices import MockDevice
 
 
 class Harness:
-    def __init__(self, *, takeover_wait=10.0, takeover_cooldown=30.0):
+    def __init__(self, *, takeover_wait=10.0, takeover_cooldown=30.0, title="devgui"):
         self.psu = MockDevice()
         self.selected: list[object] = []
 
@@ -46,6 +47,7 @@ class Harness:
             self.bus_manager,
             operator_takeover_wait=takeover_wait,
             operator_takeover_cooldown=takeover_cooldown,
+            title=title,
         )
 
     def stop(self):
@@ -87,6 +89,7 @@ def test_api_layout_structure(harness):
         resp = client.get("/api/layout")
         assert resp.status_code == 200
         data = resp.json()
+        assert data["title"] == "devgui"
         assert [c["title"] for c in data["categories"]] == ["Power", "Placeholders"]
         psu = data["categories"][0]["devices"][0]
         assert psu["name"] == "PSU1"
@@ -103,6 +106,16 @@ def test_api_layout_structure(harness):
         placeholder = data["categories"][1]["devices"][0]
         assert placeholder["state"] == "not_installed"
         assert placeholder["can_open"] is False
+
+
+def test_api_layout_uses_configured_title():
+    h = Harness(title="Lab Instruments")
+    try:
+        with TestClient(h.app) as client:
+            resp = client.get("/api/layout")
+            assert resp.json()["title"] == "Lab Instruments"
+    finally:
+        h.stop()
 
 
 def test_api_call_without_operator_token_returns_403(harness):
@@ -141,6 +154,25 @@ def test_api_call_number_input_out_of_range_returns_ok_false(harness):
         body = resp.json()
         assert body["ok"] is False
         assert "above max" in body["error"]
+
+
+def test_api_call_success_logs_info_with_who_what_value(harness, caplog):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client, "alice")
+        with caplog.at_level(logging.INFO):
+            client.post("/api/call/PSU1:1", json={"value": 3.5}, headers=headers)
+        messages = [r.message for r in caplog.records]
+        assert any("PSU1:1" in m and "alice" in m and "3.5" in m and "ok" in m for m in messages)
+
+
+def test_api_call_failure_logs_exception_with_traceback(harness, caplog):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client, "alice")
+        with caplog.at_level(logging.INFO):
+            client.post("/api/call/PSU1:1", json={"value": 100}, headers=headers)
+        error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(error_records) == 1
+        assert error_records[0].exc_info is not None
 
 
 def test_api_call_select_maps_display_key_to_value(harness):

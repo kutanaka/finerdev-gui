@@ -1,3 +1,4 @@
+from devgui.settings import Settings
 from devgui.widgets import (
     Button,
     Category,
@@ -18,4 +19,5 @@ __all__ = [
     "Select",
     "TextInput",
     "Display",
+    "Settings",
 ]
