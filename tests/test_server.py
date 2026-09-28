@@ -69,6 +69,7 @@ class Harness:
                             ),
                         ],
                         auto_open=False,
+                        instance_repr="loatt(devid=8)",
                     ),
                     Device(
                         "Synth1",
@@ -522,7 +523,9 @@ def test_websocket_snapshot_includes_instance_creation_command_log(harness):
 
             by_device = {entry["device"]: entry for entry in snapshot["command_log"]}
             assert by_device["PSU1"]["text"] == "PSU1 = MockDevice(...)"
-            assert by_device["Att1"]["text"] == "Att1 = MockDevice(...)"
+            # Att1 has an explicit instance_repr: the log shows the real
+            # constructor call instead of falling back to "MockDevice(...)".
+            assert by_device["Att1"]["text"] == "Att1 = loatt(devid=8)"
             assert by_device["Synth1"]["text"] == "Synth1 = MockDevice(...)"
             assert "LOatt3" not in by_device  # instance=None: nothing was constructed
 

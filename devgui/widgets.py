@@ -149,11 +149,21 @@ class Display(Widget):
 
 @dataclass
 class Device:
+    """`instance_repr`, if given, is human-readable text for how `instance`
+    was actually constructed (e.g. "loatt(devid=8)"), shown in the command
+    log's instance-creation line (section 8.2). layout.py builds `instance`
+    itself before Device ever sees it, so devgui has no way to recover the
+    real constructor call on its own - this field lets layout.py supply it
+    explicitly. With no `instance_repr`, the log falls back to a generic
+    "{ClassName}(...)".
+    """
+
     name: str
     instance: Any
     bus: str | None = field(default=None, kw_only=True)
     widgets: Sequence[Widget] = field(default=(), kw_only=True)
     auto_open: bool = field(default=True, kw_only=True)
+    instance_repr: str | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.bus is None:
@@ -167,6 +177,9 @@ class Device:
 
         for i, w in enumerate(self.widgets):
             w.id = f"{self.name}:{i}"
+
+        if self.instance_repr is not None and not isinstance(self.instance_repr, str):
+            raise TypeError(f"Device '{self.name}': instance_repr must be a string or None")
 
 
 @dataclass

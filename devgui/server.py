@@ -303,12 +303,16 @@ def create_app(
     # Record instance construction up front (section 8.2). layout.py builds
     # each `instance` itself before Device() ever sees it, so this is the
     # closest devgui can get to "when" - there is no hook into the user's
-    # own constructor call. No clients are connected yet at this point, so
-    # `_log_command` just seeds the ring buffer for the first `snapshot`.
+    # own constructor call. `instance_repr`, if layout.py provided one,
+    # shows the real constructor arguments (e.g. the addresses from
+    # device_list.txt); otherwise fall back to a generic placeholder. No
+    # clients are connected yet at this point, so `_log_command` just seeds
+    # the ring buffer for the first `snapshot`.
     for category in layout:
         for device in category.devices:
             if device.instance is not None:
-                _log_command(device.name, f"{device.name} = {type(device.instance).__name__}(...)")
+                ctor_text = device.instance_repr or f"{type(device.instance).__name__}(...)"
+                _log_command(device.name, f"{device.name} = {ctor_text}")
 
     def _broadcast_widget_value(widget_id: str, value: Any) -> None:
         loop = loop_holder.get("loop")

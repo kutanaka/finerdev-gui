@@ -36,6 +36,21 @@ def test_device_rejects_non_widget_items():
         Device("PSU1", object(), widgets=["not a widget"])
 
 
+def test_device_instance_repr_defaults_to_none():
+    d = Device("PSU1", object(), widgets=[])
+    assert d.instance_repr is None
+
+
+def test_device_instance_repr_is_preserved():
+    d = Device("LO att1", object(), widgets=[], instance_repr="loatt(devid=8)")
+    assert d.instance_repr == "loatt(devid=8)"
+
+
+def test_device_instance_repr_must_be_a_string():
+    with pytest.raises(TypeError):
+        Device("PSU1", object(), widgets=[], instance_repr=123)
+
+
 def test_category_rejects_non_device_items():
     with pytest.raises(TypeError):
         Category("Power", ["not a device"])

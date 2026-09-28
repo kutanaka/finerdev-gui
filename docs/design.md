@@ -124,7 +124,7 @@ layout = [
 **`Category(title, devices)`**
 画面上のタブ1つに対応する。`devices` は `Device` のリスト。
 
-**`Device(name, instance, *, bus=None, widgets=(), auto_open=True)`**
+**`Device(name, instance, *, bus=None, widgets=(), auto_open=True, instance_repr=None)`**
 タブ内のパネル1つに対応する。
 
 - `name`: 表示名かつ識別子。全体で一意であること（重複は起動時エラー）。
@@ -132,6 +132,7 @@ layout = [
 - `bus`: 通信を直列化する単位の名前（5章）。同じGPIBバス上のデバイスには同じ名前を付ける。`None` の場合はデバイス名を用いる（そのデバイス専用）。
 - `widgets`: 部品のリスト。表示順はリスト順。
 - `auto_open`: 起動時に `open()` を自動で呼ぶか（6章）。`instance=None` の場合は無視される。
+- `instance_repr`: `instance` を実際にどう構築したかを示す文字列（例: `"loatt(devid=8)"`）。`instance` は `layout.py` 自身がこの呼び出しより前に構築済みのため、devgui側には実際のコンストラクタ呼び出しを知る手段がない。コマンドログ（8.2）のインスタンス生成行で使われ、省略時は `"{クラス名}(...)"` という汎用表示にフォールバックする。
 
 ### 4.3 部品（widgets）
 
