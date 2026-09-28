@@ -1,6 +1,6 @@
 import pytest
 
-from devgui.widgets import Button, Display, NumberInput, Select, TextInput, Toggle
+from devgui.widgets import Button, DigitInput, Display, NumberInput, Select, TextInput, Toggle
 
 
 def test_button_defaults():
@@ -71,3 +71,23 @@ def test_select_accepts_dict_as_is():
 def test_select_rejects_colliding_list_values():
     with pytest.raises(ValueError):
         Select("Range", call=lambda v: None, options=[1, "1"])
+
+
+def test_digit_input_defaults():
+    d = DigitInput("Att", call=lambda v: None)
+    assert d.digits == 4
+    assert d.min is None
+    assert d.max is None
+    assert d.default == 0
+
+
+def test_digit_input_digits_must_be_positive():
+    with pytest.raises(ValueError):
+        DigitInput("Att", call=lambda v: None, digits=0)
+    with pytest.raises(ValueError):
+        DigitInput("Att", call=lambda v: None, digits=-1)
+
+
+def test_digit_input_min_must_not_exceed_max():
+    with pytest.raises(ValueError):
+        DigitInput("Att", call=lambda v: None, min=100, max=0)

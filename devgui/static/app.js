@@ -94,20 +94,27 @@ function renderDevicePanel(device) {
   let openBtn = null;
   let closeBtn = null;
 
-  if (device.can_open) {
-    openBtn = document.createElement("button");
-    openBtn.type = "button";
-    openBtn.textContent = "接続";
-    openBtn.addEventListener("click", () => callDeviceAction(device.name, "open"));
-    header.appendChild(openBtn);
-  }
+  if (device.can_open || device.can_close) {
+    const actions = document.createElement("div");
+    actions.className = "device-actions";
 
-  if (device.can_close) {
-    closeBtn = document.createElement("button");
-    closeBtn.type = "button";
-    closeBtn.textContent = "切断";
-    closeBtn.addEventListener("click", () => callDeviceAction(device.name, "close"));
-    header.appendChild(closeBtn);
+    if (device.can_open) {
+      openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.textContent = "接続";
+      openBtn.addEventListener("click", () => callDeviceAction(device.name, "open"));
+      actions.appendChild(openBtn);
+    }
+
+    if (device.can_close) {
+      closeBtn = document.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.textContent = "切断";
+      closeBtn.addEventListener("click", () => callDeviceAction(device.name, "close"));
+      actions.appendChild(closeBtn);
+    }
+
+    header.appendChild(actions);
   }
 
   panel.appendChild(header);
@@ -233,6 +240,10 @@ function renderWidget(widget) {
       wrap.appendChild(setBtn);
       break;
     }
+    case "DigitInput": {
+      wrap.appendChild(renderDigitInput(widget));
+      break;
+    }
     case "Toggle": {
       const input = document.createElement("input");
       input.type = "checkbox";
@@ -290,6 +301,87 @@ function renderWidget(widget) {
   return wrap;
 }
 
+// A decimal digit-wheel input: each digit has its own up/down buttons and
+// changes only the in-browser "pending" value. Digits show in blue while
+// pending != the last-confirmed value; "設定" sends the pending value and,
+// on success, that becomes the new confirmed value (digits back to black),
+// or on rejection (e.g. out of range) reverts the pending value back to the
+// last-confirmed one (design.md section 4.3).
+function renderDigitInput(widget) {
+  const container = document.createElement("div");
+  container.className = "digit-input";
+
+  const digitCount = widget.digits;
+  let confirmedValue = widget.default ?? 0;
+  let pendingValue = confirmedValue;
+  const digitEls = [];
+
+  function render() {
+    const text = String(Math.max(pendingValue, 0)).padStart(digitCount, "0").slice(-digitCount);
+    const isPending = pendingValue !== confirmedValue;
+    for (let i = 0; i < digitCount; i++) {
+      digitEls[i].textContent = text[i];
+      digitEls[i].classList.toggle("pending", isPending);
+    }
+  }
+
+  function changeDigit(index, delta) {
+    const place = digitCount - 1 - index;
+    const step = 10 ** place;
+    const current = Math.floor(pendingValue / step) % 10;
+    const next = (current + delta + 10) % 10;
+    pendingValue += (next - current) * step;
+    render();
+  }
+
+  for (let i = 0; i < digitCount; i++) {
+    const col = document.createElement("div");
+    col.className = "digit-col";
+
+    const upBtn = document.createElement("button");
+    upBtn.type = "button";
+    upBtn.className = "digit-step";
+    upBtn.textContent = "▲";
+    upBtn.dataset.operant = "true";
+    upBtn.addEventListener("click", () => changeDigit(i, 1));
+
+    const valueEl = document.createElement("span");
+    valueEl.className = "digit-value";
+
+    const downBtn = document.createElement("button");
+    downBtn.type = "button";
+    downBtn.className = "digit-step";
+    downBtn.textContent = "▼";
+    downBtn.dataset.operant = "true";
+    downBtn.addEventListener("click", () => changeDigit(i, -1));
+
+    col.appendChild(upBtn);
+    col.appendChild(valueEl);
+    col.appendChild(downBtn);
+    container.appendChild(col);
+    digitEls.push(valueEl);
+  }
+
+  const setBtn = document.createElement("button");
+  setBtn.type = "button";
+  setBtn.textContent = "設定";
+  setBtn.dataset.operant = "true";
+  setBtn.addEventListener("click", async () => {
+    const valueToSend = pendingValue;
+    const ok = await callWidgetForResult(widget.id, valueToSend);
+    if (ok) {
+      confirmedValue = valueToSend;
+    } else {
+      pendingValue = confirmedValue;
+    }
+    render();
+  });
+  container.appendChild(setBtn);
+
+  render();
+  return container;
+}
+
 function operatorRequestHeaders(extra) {
   const headers = { "X-Client-Id": state.clientId || "" };
   if (state.operatorToken) headers["X-Operator-Token"] = state.operatorToken;
@@ -309,7 +401,10 @@ function handleOperatorRejection() {
   clearOperatorTokenLocal();
 }
 
-async function callWidget(widgetId, value) {
+// Returns true/false so callers that need to know the outcome (e.g.
+// DigitInput reverting to its last confirmed value on rejection) can react;
+// callWidget itself just fires and forgets for widgets that don't need to.
+async function callWidgetForResult(widgetId, value) {
   try {
     const res = await fetch(`/api/call/${encodeURIComponent(widgetId)}`, {
       method: "POST",
@@ -318,16 +413,23 @@ async function callWidget(widgetId, value) {
     });
     if (res.status === 403) {
       handleOperatorRejection();
-      return;
+      return false;
     }
     const body = await res.json();
     if (!body.ok) {
       showToast(`エラー: ${body.error}`, true);
       showPanelError(widgetOwner[widgetId], body.error);
+      return false;
     }
+    return true;
   } catch (err) {
     showToast(`通信エラー: ${err}`, true);
+    return false;
   }
+}
+
+async function callWidget(widgetId, value) {
+  await callWidgetForResult(widgetId, value);
 }
 
 function showPanelError(deviceName, message) {

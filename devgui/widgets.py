@@ -50,6 +50,30 @@ class NumberInput(Widget):
 
 
 @dataclass
+class DigitInput(Widget):
+    """A decimal, fixed-width digit-wheel input (each digit independently
+    incremented/decremented), for device codes like an attenuator setting
+    rather than a continuous physical quantity. `call` only fires when the
+    operator commits with the widget's own "設定" action - not per digit
+    change. See docs/design.md section 4.3.
+    """
+
+    digits: int = 4
+    min: int | None = None
+    max: int | None = None
+    default: int = 0
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.digits <= 0:
+            raise ValueError(f"DigitInput '{self.label}': digits must be > 0, got {self.digits}")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError(
+                f"DigitInput '{self.label}': min ({self.min}) must be <= max ({self.max})"
+            )
+
+
+@dataclass
 class Toggle(Widget):
     default: bool = False
 

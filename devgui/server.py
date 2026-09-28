@@ -51,6 +51,7 @@ from devgui.widgets import (
     Button,
     Category,
     Device,
+    DigitInput,
     Display,
     NumberInput,
     Select,
@@ -92,6 +93,8 @@ def _serialize_widget(widget: Widget) -> dict[str, Any]:
             default=widget.default,
             value_type=widget.type.__name__,
         )
+    elif isinstance(widget, DigitInput):
+        base.update(digits=widget.digits, min=widget.min, max=widget.max, default=widget.default)
     elif isinstance(widget, Toggle):
         base["default"] = widget.default
     elif isinstance(widget, Select):
@@ -143,6 +146,13 @@ def _invoke_widget(widget: Widget, raw_value: Any) -> Any:
         return widget.call()
     if isinstance(widget, NumberInput):
         value = widget.type(raw_value)
+        if widget.min is not None and value < widget.min:
+            raise ValueError(f"value {value} is below min {widget.min}")
+        if widget.max is not None and value > widget.max:
+            raise ValueError(f"value {value} is above max {widget.max}")
+        return widget.call(value)
+    if isinstance(widget, DigitInput):
+        value = int(raw_value)
         if widget.min is not None and value < widget.min:
             raise ValueError(f"value {value} is below min {widget.min}")
         if widget.max is not None and value > widget.max:

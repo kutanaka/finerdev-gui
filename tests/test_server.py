@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from devgui.runtime.bus import BusManager
 from devgui.runtime.devices import DeviceManager, DeviceState
 from devgui.server import create_app
-from devgui.widgets import Button, Category, Device, Display, NumberInput, Select
+from devgui.widgets import Button, Category, Device, DigitInput, Display, NumberInput, Select
 from examples.mock_devices import MockDevice
 
 
@@ -15,6 +15,7 @@ class Harness:
     def __init__(self, *, takeover_wait=10.0, takeover_cooldown=30.0, title="devgui"):
         self.psu = MockDevice()
         self.selected: list[object] = []
+        self.att_values: list[int] = []
 
         self.layout = [
             Category(
@@ -32,6 +33,20 @@ class Harness:
                                 options={"Low": 1, "High": 2},
                             ),
                             Display("Readback", call=self.psu.get, poll=0.02),
+                        ],
+                        auto_open=False,
+                    ),
+                    Device(
+                        "Att1",
+                        object(),
+                        widgets=[
+                            DigitInput(
+                                "Attenuation",
+                                call=lambda v: self.att_values.append(v),
+                                digits=4,
+                                min=0,
+                                max=4095,
+                            ),
                         ],
                         auto_open=False,
                     ),
@@ -181,6 +196,37 @@ def test_api_call_select_maps_display_key_to_value(harness):
         resp = client.post("/api/call/PSU1:2", json={"value": "High"}, headers=headers)
         assert resp.json() == {"ok": True}
         assert harness.selected == [2]
+
+
+def test_digit_input_is_serialized_with_digits_min_max(harness):
+    with TestClient(harness.app) as client:
+        resp = client.get("/api/layout")
+        att_device = resp.json()["categories"][0]["devices"][1]
+        assert att_device["name"] == "Att1"
+        widget = att_device["widgets"][0]
+        assert widget["type"] == "DigitInput"
+        assert widget["digits"] == 4
+        assert widget["min"] == 0
+        assert widget["max"] == 4095
+        assert widget["default"] == 0
+
+
+def test_api_call_digit_input_sets_value(harness):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        resp = client.post("/api/call/Att1:0", json={"value": 2048}, headers=headers)
+        assert resp.json() == {"ok": True}
+        assert harness.att_values == [2048]
+
+
+def test_api_call_digit_input_out_of_range_returns_ok_false(harness):
+    with TestClient(harness.app) as client:
+        headers = operator_headers(client)
+        resp = client.post("/api/call/Att1:0", json={"value": 9999}, headers=headers)
+        body = resp.json()
+        assert body["ok"] is False
+        assert "above max" in body["error"]
+        assert harness.att_values == []
 
 
 def test_api_call_unknown_widget_404(harness):

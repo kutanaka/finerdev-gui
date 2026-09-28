@@ -20,7 +20,7 @@ Run with:
     python -m devgui --layout examples/layout_example.py
 """
 
-from devgui import Category, Device, Display, NumberInput, Select, Toggle
+from devgui import Category, Device, DigitInput, Display, NumberInput, Select, Toggle
 from finerdev.loatt import loatt
 from finerdev.multiplier import mp
 from finerdev.sourcemeter import SoureMeter2400, SourceMeter2450
@@ -52,18 +52,26 @@ def source_meter_widgets(dev):
 
 
 def loatt_widgets(dev):
+    # No readback Display: the attenuation is only ever changed from this
+    # panel, so a continuously-polled echo of what we just set adds no
+    # information - the digit-wheel input's own pending/confirmed coloring
+    # and the "設定" action's success/failure feedback cover it.
+    # DigitInput (not NumberInput) since the device code is a raw 4-digit
+    # value (0-4095, sent as a 4-hex-digit command internally), not a
+    # continuous physical quantity.
     return [
-        NumberInput("減衰量設定", call=dev.set, min=0, max=4095, step=1, type=int),
-        Display("設定値読み出し", call=dev.get, poll=2.0),
+        DigitInput("減衰量設定", call=dev.set, digits=4, min=0, max=4095),
     ]
 
 
 def synth_widgets(dev):
+    # No readback Display for freq/amp either, for the same reason as
+    # loatt_widgets above - these are settings this panel owns, not
+    # independently-changing measurements.
     return [
         NumberInput("周波数設定", call=dev.freq, unit="GHz", min=0, step=0.001),
         NumberInput("出力レベル設定", call=dev.amp, unit="dBm"),
         Toggle("出力ON/OFF", call=dev.output),
-        Display("周波数読み出し", call=dev.freq, poll=2.0),
     ]
 
 

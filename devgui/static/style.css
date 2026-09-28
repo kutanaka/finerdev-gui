@@ -109,7 +109,7 @@ body {
 
 .panel-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 1rem;
 }
 
@@ -132,6 +132,21 @@ body {
 .device-name {
   font-weight: 600;
   margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 3rem;
+}
+
+/* The connect/disconnect buttons must stay on the same line as each
+   other, even if the panel is narrow enough that the header as a whole
+   wraps - only .device-name (via the ellipsis above) or the header
+   itself should give way, never a split between these two buttons. */
+.device-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .state-badge {
@@ -185,6 +200,39 @@ body {
 .widget button {
   padding: 0.35rem 0.5rem;
   font: inherit;
+}
+
+.digit-input {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.digit-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+}
+
+.digit-value {
+  font-family: ui-monospace, monospace;
+  font-size: 1.1rem;
+  width: 1.4em;
+  text-align: center;
+  color: var(--text);
+}
+
+.digit-value.pending {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.digit-step {
+  padding: 0 0.4rem !important;
+  line-height: 1.2;
+  font-size: 0.7rem;
 }
 
 .display-log {
