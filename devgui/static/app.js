@@ -10,6 +10,9 @@ const state = {
   clientId: null,
   operatorToken: sessionStorage.getItem(OPERATOR_TOKEN_KEY),
   isHolder: false,
+  outgoingRequestId: null, // our own pending takeover request, if any
+  incomingRequestId: null, // a pending request we (the holder) must respond to
+  incomingCountdownTimer: null,
 };
 
 // name -> { panel, badge, openBtn, closeBtn, errorEl, lastState, lastError }
@@ -419,6 +422,7 @@ async function attemptReclaimOperator() {
 function applyOperatorInfo(info) {
   const statusEl = document.getElementById("operator-status");
   const acquireBtn = document.getElementById("operator-acquire-btn");
+  const requestBtn = document.getElementById("operator-request-btn");
   const releaseBtn = document.getElementById("operator-release-btn");
 
   if (!info.is_held) {
@@ -430,7 +434,17 @@ function applyOperatorInfo(info) {
   }
 
   acquireBtn.hidden = info.is_held;
+  requestBtn.hidden = !info.is_held || state.isHolder;
   releaseBtn.hidden = !state.isHolder;
+
+  // request_pending is only meaningful once we know about it (snapshot and
+  // operator_state both always carry it); when it's absent (a locally
+  // synthesized info object from our own acquire/release), leave any open
+  // dialog alone - the next broadcast will settle it.
+  if (info.request_pending === false) {
+    if (state.incomingRequestId) closeIncomingTakeoverDialog();
+    if (state.outgoingRequestId) hideWaitingDialog();
+  }
 
   refreshAllDeviceControls();
 }
@@ -511,6 +525,91 @@ function appendDisplayEntry(widgetId, entry) {
   }
 }
 
+// --- forced takeover (design.md section 9.4) ---
+
+async function requestTakeover() {
+  try {
+    const res = await fetch("/api/operator/request", {
+      method: "POST",
+      headers: operatorRequestHeaders(),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(`要求できません: ${body.detail || res.status}`, true);
+      return;
+    }
+    if (body.granted_immediately) {
+      saveOperatorToken(body.token, body.display_name);
+    } else {
+      state.outgoingRequestId = body.request_id;
+      document.getElementById("takeover-waiting-dialog").hidden = false;
+    }
+  } catch (err) {
+    showToast(`通信エラー: ${err}`, true);
+  }
+}
+
+function hideWaitingDialog() {
+  state.outgoingRequestId = null;
+  document.getElementById("takeover-waiting-dialog").hidden = true;
+}
+
+async function cancelTakeoverRequest() {
+  const requestId = state.outgoingRequestId;
+  if (!requestId) return;
+  hideWaitingDialog();
+  try {
+    await fetch(`/api/operator/request/${encodeURIComponent(requestId)}/cancel`, {
+      method: "POST",
+      headers: operatorRequestHeaders(),
+    });
+  } catch (err) {
+    showToast(`通信エラー: ${err}`, true);
+  }
+}
+
+function showIncomingTakeoverDialog(requestId, requesterName, waitSeconds) {
+  state.incomingRequestId = requestId;
+  document.getElementById("takeover-incoming-message").textContent =
+    `${requesterName} が操作権を要求しています。`;
+
+  let remaining = Math.ceil(waitSeconds);
+  const countdownEl = document.getElementById("takeover-incoming-countdown");
+  countdownEl.textContent = remaining;
+  clearInterval(state.incomingCountdownTimer);
+  state.incomingCountdownTimer = setInterval(() => {
+    remaining -= 1;
+    countdownEl.textContent = Math.max(remaining, 0);
+    if (remaining <= 0) clearInterval(state.incomingCountdownTimer);
+  }, 1000);
+
+  document.getElementById("takeover-incoming-dialog").hidden = false;
+}
+
+function closeIncomingTakeoverDialog() {
+  state.incomingRequestId = null;
+  clearInterval(state.incomingCountdownTimer);
+  document.getElementById("takeover-incoming-dialog").hidden = true;
+}
+
+async function respondToTakeover(accept) {
+  const requestId = state.incomingRequestId;
+  if (!requestId) return;
+  closeIncomingTakeoverDialog();
+  try {
+    const res = await fetch(`/api/operator/request/${encodeURIComponent(requestId)}/respond`, {
+      method: "POST",
+      headers: operatorRequestHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ accept }),
+    });
+    if (res.status === 403) {
+      handleOperatorRejection();
+    }
+  } catch (err) {
+    showToast(`通信エラー: ${err}`, true);
+  }
+}
+
 function handleWsMessage(message) {
   switch (message.type) {
     case "hello":
@@ -539,8 +638,34 @@ function handleWsMessage(message) {
     case "operator_state":
       applyOperatorInfo(message);
       break;
+    case "takeover_request":
+      showIncomingTakeoverDialog(
+        message.request_id,
+        message.requester_display_name,
+        message.wait_seconds
+      );
+      break;
+    case "takeover_result":
+      hideWaitingDialog();
+      showToast(
+        message.result === "granted" ? "操作権の要求が許可されました" : "操作権の要求が拒否されました",
+        message.result !== "granted"
+      );
+      break;
+    case "operator_granted":
+      saveOperatorToken(message.token, message.display_name);
+      hideWaitingDialog();
+      break;
+    case "operator_revoked":
+      closeIncomingTakeoverDialog();
+      state.operatorToken = null;
+      state.isHolder = false;
+      sessionStorage.removeItem(OPERATOR_TOKEN_KEY);
+      showToast(message.reason || "操作権が移譲されました", true);
+      refreshAllDeviceControls();
+      break;
     default:
-      // takeover_* / notice: later steps.
+      // notice: a later step.
       break;
   }
 }
@@ -548,6 +673,14 @@ function handleWsMessage(message) {
 window.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("operator-acquire-btn").addEventListener("click", acquireOperator);
   document.getElementById("operator-release-btn").addEventListener("click", releaseOperator);
+  document.getElementById("operator-request-btn").addEventListener("click", requestTakeover);
+  document.getElementById("takeover-cancel-btn").addEventListener("click", cancelTakeoverRequest);
+  document
+    .getElementById("takeover-accept-btn")
+    .addEventListener("click", () => respondToTakeover(true));
+  document
+    .getElementById("takeover-reject-btn")
+    .addEventListener("click", () => respondToTakeover(false));
   await loadLayout();
   connectWebSocket();
 });

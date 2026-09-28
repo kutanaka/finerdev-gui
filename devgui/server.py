@@ -1,12 +1,13 @@
 """FastAPI application: REST + WebSocket, including the operator right.
 
-Per docs/design.md section 14 step 8, /api/call and /api/devices/{name}/
-open|close now require a valid X-Operator-Token (section 7.2); the
-forced-takeover endpoints (/api/operator/request...) are still out of
-scope until step 9. /api/operator/acquire and /release implement
-sections 9.1-9.3: exactly one operator right for the whole server, freed
-manually, on idle timeout, or when its holder's WebSocket stays
-disconnected past the grace period - not on any device-specific state.
+Per docs/design.md section 14 steps 8-9. /api/call and /api/devices/
+{name}/open|close require a valid X-Operator-Token (section 7.2).
+/api/operator/acquire and /release implement sections 9.1-9.3: exactly
+one operator right for the whole server, freed manually, on idle
+timeout, or when its holder's WebSocket stays disconnected past the
+grace period. /api/operator/request(/cancel|/respond) implement the
+forced-takeover state machine (section 9.4) on top of the same
+OperatorManager.
 """
 
 from __future__ import annotations
@@ -22,12 +23,29 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Body,
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.staticfiles import StaticFiles
 
 from devgui.runtime.bus import BusManager, Priority
 from devgui.runtime.devices import DeviceManager, DeviceNotInstalledError, DeviceRuntime
-from devgui.runtime.operator import InvalidOperatorTokenError, OperatorHeldError, OperatorManager
+from devgui.runtime.operator import (
+    InvalidOperatorTokenError,
+    OperatorHeldError,
+    OperatorManager,
+    RequestRejected,
+    TakeoverCooldownError,
+    TakeoverInProgressError,
+    TakeoverNotFoundError,
+    TransferResult,
+)
 from devgui.runtime.poller import Poller
 from devgui.widgets import (
     Button,
@@ -164,6 +182,8 @@ def create_app(
     *,
     operator_idle_timeout: float = 600.0,
     operator_disconnect_grace: float = 30.0,
+    operator_takeover_wait: float = 10.0,
+    operator_takeover_cooldown: float = 30.0,
 ) -> FastAPI:
     widgets_by_id: dict[str, tuple[Device, Widget]] = {
         widget.id: (device, widget)
@@ -174,12 +194,16 @@ def create_app(
     display_ids = [wid for wid, (_, w) in widgets_by_id.items() if isinstance(w, Display)]
 
     connections: set[WebSocket] = set()
+    connections_by_client_id: dict[str, WebSocket] = {}
     connections_lock = asyncio.Lock()
     loop_holder: dict[str, asyncio.AbstractEventLoop] = {}
     hostname_cache: dict[str, str | None] = {}
     client_display_names: dict[str, str] = {}
     operator = OperatorManager(
-        idle_timeout=operator_idle_timeout, disconnect_grace=operator_disconnect_grace
+        idle_timeout=operator_idle_timeout,
+        disconnect_grace=operator_disconnect_grace,
+        takeover_wait=operator_takeover_wait,
+        takeover_cooldown=operator_takeover_cooldown,
     )
     background_tasks: list[asyncio.Task] = []
 
@@ -235,11 +259,48 @@ def create_app(
             raise HTTPException(status_code=403, detail="operator right required")
         operator.touch(token)
 
+    async def _send_to_client(client_id: str | None, message: dict[str, Any]) -> None:
+        if client_id is None:
+            return
+        ws = connections_by_client_id.get(client_id)
+        if ws is None:
+            return
+        try:
+            await ws.send_json(message)
+        except Exception:
+            logger.debug("failed to send a targeted message to %s", client_id, exc_info=True)
+
+    async def _apply_transfer(result: TransferResult) -> None:
+        """A takeover request resolved in the requester's favor - accepted,
+        timed out, or the old holder released while it was pending."""
+        await _send_to_client(
+            result.old_holder_client_id,
+            {
+                "type": "operator_revoked",
+                "reason": f"操作権が{result.requester_display_name}に移りました",
+            },
+        )
+        await _send_to_client(
+            result.requester_client_id,
+            {
+                "type": "operator_granted",
+                "token": result.new_token,
+                "display_name": result.requester_display_name,
+            },
+        )
+        await _send_to_client(
+            result.requester_client_id, {"type": "takeover_result", "result": "granted"}
+        )
+        await _broadcast({"type": "operator_state", **operator.snapshot()})
+
     async def _expiry_loop() -> None:
         while True:
             await asyncio.sleep(1.0)
             if operator.check_expiration():
                 _broadcast_operator_state()
+            transfer = operator.check_pending_expiration()
+            if transfer is not None:
+                await _apply_transfer(transfer)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -354,10 +415,96 @@ def create_app(
         if x_operator_token is None:
             raise HTTPException(status_code=403, detail="X-Operator-Token header is required")
         try:
-            operator.release(x_operator_token)
+            result = operator.release(x_operator_token)
         except InvalidOperatorTokenError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
+        if isinstance(result, TransferResult):
+            # A takeover request was pending: section 9.4 item 5 hands the
+            # right straight to the requester instead of freeing it.
+            await _apply_transfer(result)
+        else:
+            _broadcast_operator_state()
+        return {"ok": True}
+
+    @app.post("/api/operator/request")
+    async def api_operator_request(
+        request: Request, x_client_id: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        if x_client_id is None:
+            raise HTTPException(status_code=400, detail="X-Client-Id header is required")
+        display_name = client_display_names.get(x_client_id, x_client_id)
+
+        if not operator.is_held:
+            # Section 9.4 item 1: free right -> ordinary immediate acquire.
+            token = operator.acquire(x_client_id, display_name)
+            _broadcast_operator_state()
+            return {
+                "ok": True,
+                "granted_immediately": True,
+                "token": token,
+                "display_name": display_name,
+            }
+
+        ip = request.client.host if request.client else "unknown"
+        try:
+            pending = operator.request_takeover(x_client_id, ip, display_name)
+        except TakeoverInProgressError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except TakeoverCooldownError as exc:
+            raise HTTPException(status_code=429, detail=str(exc))
+
+        await _send_to_client(
+            operator.client_id,
+            {
+                "type": "takeover_request",
+                "request_id": pending.request_id,
+                "requester_display_name": display_name,
+                "wait_seconds": operator_takeover_wait,
+            },
+        )
         _broadcast_operator_state()
+        return {"ok": True, "granted_immediately": False, "request_id": pending.request_id}
+
+    @app.post("/api/operator/request/{request_id}/cancel")
+    async def api_operator_request_cancel(
+        request_id: str, x_client_id: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        if x_client_id is None:
+            raise HTTPException(status_code=400, detail="X-Client-Id header is required")
+        try:
+            operator.cancel_request(request_id, x_client_id)
+        except TakeoverNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        # No dedicated "cancelled" WS message type exists (section 7.3); the
+        # holder's dialog closes itself when operator_state reports
+        # request_pending: false.
+        _broadcast_operator_state()
+        return {"ok": True}
+
+    @app.post("/api/operator/request/{request_id}/respond")
+    async def api_operator_request_respond(
+        request_id: str,
+        body: dict[str, Any] = Body(default={}),
+        x_operator_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        if x_operator_token is None:
+            raise HTTPException(status_code=403, detail="X-Operator-Token header is required")
+        accept = bool(body.get("accept"))
+        try:
+            result = operator.respond_to_request(request_id, x_operator_token, accept)
+        except InvalidOperatorTokenError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except TakeoverNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+        if isinstance(result, TransferResult):
+            await _apply_transfer(result)
+        else:
+            assert isinstance(result, RequestRejected)
+            await _send_to_client(
+                result.requester_client_id, {"type": "takeover_result", "result": "rejected"}
+            )
+            _broadcast_operator_state()
         return {"ok": True}
 
     @app.websocket("/ws")
@@ -368,6 +515,7 @@ def create_app(
         client_display_names[client_id] = _display_name_for(client_ip, hostname_cache)
         async with connections_lock:
             connections.add(websocket)
+            connections_by_client_id[client_id] = websocket
         try:
             await websocket.send_json({"type": "hello", "client_id": client_id})
             await websocket.send_json(
@@ -388,8 +536,14 @@ def create_app(
         finally:
             async with connections_lock:
                 connections.discard(websocket)
+                connections_by_client_id.pop(client_id, None)
             client_display_names.pop(client_id, None)
             operator.mark_disconnected(client_id)
+            if operator.cancel_if_requester(client_id):
+                # Section 9.4 item 3: the requester disconnecting withdraws
+                # their own pending request; the holder's dialog closes via
+                # the request_pending: false in this broadcast.
+                _broadcast_operator_state()
 
     # Registered last: falls back to serving devgui/static/* (index.html at
     # "/") for anything not matched by the API/WebSocket routes above.

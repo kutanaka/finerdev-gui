@@ -242,3 +242,36 @@ body {
     gap: 0.4rem;
   }
 }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  padding: 1rem;
+}
+
+.modal-box {
+  background: var(--panel-bg);
+  color: var(--text);
+  border-radius: 0.5rem;
+  padding: 1.25rem;
+  max-width: 22rem;
+  width: 100%;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.modal-actions button {
+  padding: 0.4rem 0.9rem;
+  font: inherit;
+}

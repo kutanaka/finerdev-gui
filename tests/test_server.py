@@ -11,7 +11,7 @@ from examples.mock_devices import MockDevice
 
 
 class Harness:
-    def __init__(self):
+    def __init__(self, *, takeover_wait=10.0, takeover_cooldown=30.0):
         self.psu = MockDevice()
         self.selected: list[object] = []
 
@@ -40,7 +40,13 @@ class Harness:
         ]
         self.bus_manager = BusManager()
         self.device_manager = DeviceManager(self.layout, self.bus_manager)
-        self.app = create_app(self.layout, self.device_manager, self.bus_manager)
+        self.app = create_app(
+            self.layout,
+            self.device_manager,
+            self.bus_manager,
+            operator_takeover_wait=takeover_wait,
+            operator_takeover_cooldown=takeover_cooldown,
+        )
 
     def stop(self):
         self.bus_manager.stop_all(wait=False)
@@ -49,6 +55,13 @@ class Harness:
 @pytest.fixture
 def harness():
     h = Harness()
+    yield h
+    h.stop()
+
+
+@pytest.fixture
+def fast_takeover_harness():
+    h = Harness(takeover_wait=0.1, takeover_cooldown=0.1)
     yield h
     h.stop()
 
@@ -247,7 +260,11 @@ def test_websocket_hello_and_snapshot(harness):
             assert snapshot["devices"]["PSU1"]["state"] == "disconnected"
             assert snapshot["devices"]["LOatt3"]["state"] == "not_installed"
             assert snapshot["displays"] == {"PSU1:3": []}
-            assert snapshot["operator"] == {"holder_display_name": None, "is_held": False}
+            assert snapshot["operator"] == {
+                "holder_display_name": None,
+                "is_held": False,
+                "request_pending": False,
+            }
 
 
 def test_websocket_receives_operator_state_broadcast_on_acquire_and_release(harness):
@@ -270,6 +287,7 @@ def test_websocket_receives_operator_state_broadcast_on_acquire_and_release(harn
                 "type": "operator_state",
                 "holder_display_name": None,
                 "is_held": False,
+                "request_pending": False,
             }
 
 
@@ -315,3 +333,231 @@ def test_websocket_receives_device_state_broadcast_on_manual_open(harness):
                 "state": "connected",
                 "error_message": None,
             }
+
+
+# --- forced takeover (section 9.4) ---
+
+
+def test_operator_request_when_free_grants_immediately(harness):
+    with TestClient(harness.app) as client:
+        resp = client.post("/api/operator/request", headers={"X-Client-Id": "c1"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["granted_immediately"] is True
+        assert body["token"]
+
+
+def test_operator_request_when_held_notifies_holder(harness):
+    with TestClient(harness.app) as client:
+        with client.websocket_connect("/ws") as holder_ws:
+            holder_client_id = holder_ws.receive_json()["client_id"]
+            holder_ws.receive_json()  # snapshot
+            holder_headers = operator_headers(client, holder_client_id)
+            holder_ws.receive_json(mode="text")  # operator_state from our own acquire
+
+            with client.websocket_connect("/ws") as requester_ws:
+                requester_client_id = requester_ws.receive_json()["client_id"]
+                requester_ws.receive_json()  # snapshot
+
+                resp = client.post(
+                    "/api/operator/request", headers={"X-Client-Id": requester_client_id}
+                )
+                assert resp.status_code == 200
+                body = resp.json()
+                assert body["granted_immediately"] is False
+                request_id = body["request_id"]
+
+                takeover_request = holder_ws.receive_json(mode="text")
+                assert takeover_request["type"] == "takeover_request"
+                assert takeover_request["request_id"] == request_id
+                assert takeover_request["requester_display_name"]
+
+                op_state = holder_ws.receive_json(mode="text")
+                assert op_state["type"] == "operator_state"
+                assert op_state["is_held"] is True
+                assert op_state["request_pending"] is True
+
+
+def test_operator_request_second_while_pending_returns_409(harness):
+    with TestClient(harness.app) as client:
+        operator_headers(client, "holder")
+        client.post("/api/operator/request", headers={"X-Client-Id": "requester1"})
+        resp = client.post("/api/operator/request", headers={"X-Client-Id": "requester2"})
+        assert resp.status_code == 409
+
+
+def test_operator_request_accept_transfers_and_notifies_both(harness):
+    with TestClient(harness.app) as client:
+        with client.websocket_connect("/ws") as holder_ws:
+            holder_client_id = holder_ws.receive_json()["client_id"]
+            holder_ws.receive_json()
+            holder_headers = operator_headers(client, holder_client_id)
+            holder_ws.receive_json(mode="text")  # operator_state from our own acquire
+
+            with client.websocket_connect("/ws") as requester_ws:
+                requester_client_id = requester_ws.receive_json()["client_id"]
+                requester_ws.receive_json()
+
+                resp = client.post(
+                    "/api/operator/request", headers={"X-Client-Id": requester_client_id}
+                )
+                request_id = resp.json()["request_id"]
+                holder_ws.receive_json(mode="text")  # takeover_request
+                holder_ws.receive_json(mode="text")  # operator_state (request_pending)
+                requester_ws.receive_json(mode="text")  # operator_state (request_pending)
+
+                resp = client.post(
+                    f"/api/operator/request/{request_id}/respond",
+                    json={"accept": True},
+                    headers=holder_headers,
+                )
+                assert resp.status_code == 200
+
+                revoked = holder_ws.receive_json(mode="text")
+                assert revoked["type"] == "operator_revoked"
+
+                granted = requester_ws.receive_json(mode="text")
+                assert granted["type"] == "operator_granted"
+                new_token = granted["token"]
+
+                result = requester_ws.receive_json(mode="text")
+                assert result == {"type": "takeover_result", "result": "granted"}
+
+                op_state = requester_ws.receive_json(mode="text")
+                assert op_state["is_held"] is True
+                assert op_state["request_pending"] is False
+
+                # The old holder's token no longer works.
+                resp = client.post("/api/call/PSU1:0", json={}, headers=holder_headers)
+                assert resp.status_code == 403
+
+                # The new token does.
+                resp = client.post(
+                    "/api/call/PSU1:0",
+                    json={},
+                    headers={"X-Client-Id": requester_client_id, "X-Operator-Token": new_token},
+                )
+                assert resp.status_code == 200
+
+
+def test_operator_request_reject_notifies_requester_and_sets_cooldown(harness):
+    with TestClient(harness.app) as client:
+        holder_headers = operator_headers(client, "holder")
+
+        with client.websocket_connect("/ws") as requester_ws:
+            requester_client_id = requester_ws.receive_json()["client_id"]
+            requester_ws.receive_json()
+
+            resp = client.post(
+                "/api/operator/request", headers={"X-Client-Id": requester_client_id}
+            )
+            request_id = resp.json()["request_id"]
+            requester_ws.receive_json(mode="text")  # operator_state (request_pending)
+
+            resp = client.post(
+                f"/api/operator/request/{request_id}/respond",
+                json={"accept": False},
+                headers=holder_headers,
+            )
+            assert resp.status_code == 200
+
+            result = requester_ws.receive_json(mode="text")
+            assert result == {"type": "takeover_result", "result": "rejected"}
+
+        # Still on cooldown immediately after rejection.
+        resp = client.post(
+            "/api/operator/request", headers={"X-Client-Id": requester_client_id}
+        )
+        assert resp.status_code == 429
+
+
+def test_operator_request_cancel_by_requester(harness):
+    with TestClient(harness.app) as client:
+        operator_headers(client, "holder")
+        resp = client.post("/api/operator/request", headers={"X-Client-Id": "requester"})
+        request_id = resp.json()["request_id"]
+
+        resp = client.post(
+            f"/api/operator/request/{request_id}/cancel", headers={"X-Client-Id": "requester"}
+        )
+        assert resp.status_code == 200
+
+        # No longer blocked: someone else can request now.
+        resp = client.post("/api/operator/request", headers={"X-Client-Id": "someone-else"})
+        assert resp.status_code == 200
+
+
+def test_operator_request_cancel_by_non_requester_returns_404(harness):
+    with TestClient(harness.app) as client:
+        operator_headers(client, "holder")
+        resp = client.post("/api/operator/request", headers={"X-Client-Id": "requester"})
+        request_id = resp.json()["request_id"]
+
+        resp = client.post(
+            f"/api/operator/request/{request_id}/cancel", headers={"X-Client-Id": "not-requester"}
+        )
+        assert resp.status_code == 404
+
+
+def test_operator_request_respond_by_non_holder_returns_403(harness):
+    with TestClient(harness.app) as client:
+        operator_headers(client, "holder")
+        resp = client.post("/api/operator/request", headers={"X-Client-Id": "requester"})
+        request_id = resp.json()["request_id"]
+
+        resp = client.post(
+            f"/api/operator/request/{request_id}/respond",
+            json={"accept": True},
+            headers={"X-Operator-Token": "not-the-holder-token"},
+        )
+        assert resp.status_code == 403
+
+
+def test_requester_disconnect_cancels_pending_request(harness):
+    with TestClient(harness.app) as client:
+        operator_headers(client, "holder")
+
+        with client.websocket_connect("/ws") as requester_ws:
+            hello = requester_ws.receive_json()
+            requester_client_id = hello["client_id"]
+            requester_ws.receive_json()  # snapshot
+
+            client.post("/api/operator/request", headers={"X-Client-Id": requester_client_id})
+            # Requester's own websocket disconnects here (context manager exit).
+
+        # A different client can now request without hitting 409.
+        resp = client.post("/api/operator/request", headers={"X-Client-Id": "someone-else"})
+        assert resp.status_code == 200
+
+
+def test_holder_releasing_while_request_pending_grants_requester(harness):
+    with TestClient(harness.app) as client:
+        holder_headers = operator_headers(client, "holder")
+
+        with client.websocket_connect("/ws") as requester_ws:
+            requester_client_id = requester_ws.receive_json()["client_id"]
+            requester_ws.receive_json()
+
+            client.post("/api/operator/request", headers={"X-Client-Id": requester_client_id})
+            requester_ws.receive_json(mode="text")  # operator_state (request_pending)
+            client.post("/api/operator/release", headers=holder_headers)
+
+            granted = requester_ws.receive_json(mode="text")
+            assert granted["type"] == "operator_granted"
+
+
+def test_takeover_timeout_grants_requester_with_no_response(fast_takeover_harness):
+    with TestClient(fast_takeover_harness.app) as client:
+        operator_headers(client, "holder")
+
+        with client.websocket_connect("/ws") as requester_ws:
+            requester_client_id = requester_ws.receive_json()["client_id"]
+            requester_ws.receive_json()
+
+            client.post("/api/operator/request", headers={"X-Client-Id": requester_client_id})
+            requester_ws.receive_json(mode="text")  # operator_state (request_pending)
+
+            granted = requester_ws.receive_json(mode="text")
+            assert granted["type"] == "operator_granted"
+            result = requester_ws.receive_json(mode="text")
+            assert result == {"type": "takeover_result", "result": "granted"}

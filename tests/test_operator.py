@@ -4,6 +4,11 @@ from devgui.runtime.operator import (
     InvalidOperatorTokenError,
     OperatorHeldError,
     OperatorManager,
+    RequestRejected,
+    TakeoverCooldownError,
+    TakeoverInProgressError,
+    TakeoverNotFoundError,
+    TransferResult,
 )
 
 
@@ -33,7 +38,11 @@ def test_acquire_when_free_returns_token(manager):
     assert token
     assert manager.is_held is True
     assert manager.is_holder(token) is True
-    assert manager.snapshot() == {"holder_display_name": "Alice (1.2.3.4)", "is_held": True}
+    assert manager.snapshot() == {
+        "holder_display_name": "Alice (1.2.3.4)",
+        "is_held": True,
+        "request_pending": False,
+    }
 
 
 def test_acquire_when_held_raises(manager):
@@ -46,7 +55,11 @@ def test_release_clears_holder(manager):
     token = manager.acquire("c1", "Alice")
     manager.release(token)
     assert manager.is_held is False
-    assert manager.snapshot() == {"holder_display_name": None, "is_held": False}
+    assert manager.snapshot() == {
+        "holder_display_name": None,
+        "is_held": False,
+        "request_pending": False,
+    }
 
 
 def test_release_with_wrong_token_raises(manager):
@@ -145,3 +158,148 @@ def test_reclaim_with_wrong_token_while_held_raises(manager):
     manager.acquire("c1", "Alice")
     with pytest.raises(OperatorHeldError):
         manager.acquire("c2", "Bob", presented_token="not-the-real-token")
+
+
+# --- forced takeover (section 9.4) ---
+
+
+def test_request_takeover_creates_pending_request(manager):
+    manager.acquire("c1", "Alice")
+    request = manager.request_takeover("c2", "9.9.9.9", "Bob")
+    assert request.request_id
+    assert request.requester_client_id == "c2"
+    assert manager.snapshot()["request_pending"] is True
+
+
+def test_request_takeover_while_one_pending_raises(manager):
+    manager.acquire("c1", "Alice")
+    manager.request_takeover("c2", "9.9.9.9", "Bob")
+    with pytest.raises(TakeoverInProgressError):
+        manager.request_takeover("c3", "8.8.8.8", "Carol")
+
+
+def test_accept_transfers_the_right(manager, clock):
+    holder_token = manager.acquire("c1", "Alice")
+    request = manager.request_takeover("c2", "9.9.9.9", "Bob")
+
+    result = manager.respond_to_request(request.request_id, holder_token, accept=True)
+
+    assert isinstance(result, TransferResult)
+    assert result.new_token != holder_token
+    assert result.requester_client_id == "c2"
+    assert result.old_holder_client_id == "c1"
+    assert result.old_holder_display_name == "Alice"
+    assert manager.is_holder(result.new_token) is True
+    assert manager.is_holder(holder_token) is False
+    assert manager.snapshot()["holder_display_name"] == "Bob"
+    assert manager.snapshot()["request_pending"] is False
+
+
+def test_reject_notifies_and_sets_cooldown(manager, clock):
+    holder_token = manager.acquire("c1", "Alice")
+    request = manager.request_takeover("c2", "9.9.9.9", "Bob")
+
+    result = manager.respond_to_request(request.request_id, holder_token, accept=False)
+
+    assert isinstance(result, RequestRejected)
+    assert result.requester_client_id == "c2"
+    assert manager.snapshot()["request_pending"] is False
+    assert manager.is_holder(holder_token) is True  # rejection keeps the same holder
+
+    with pytest.raises(TakeoverCooldownError):
+        manager.request_takeover("c2", "9.9.9.9", "Bob")
+
+    clock.advance(31)  # past the 30s default cooldown
+    manager.request_takeover("c2", "9.9.9.9", "Bob")  # no longer raises
+
+
+def test_respond_by_non_holder_raises(manager):
+    manager.acquire("c1", "Alice")
+    request = manager.request_takeover("c2", "9.9.9.9", "Bob")
+    with pytest.raises(InvalidOperatorTokenError):
+        manager.respond_to_request(request.request_id, "not-the-holder-token", accept=True)
+
+
+def test_respond_with_wrong_request_id_raises(manager):
+    holder_token = manager.acquire("c1", "Alice")
+    manager.request_takeover("c2", "9.9.9.9", "Bob")
+    with pytest.raises(TakeoverNotFoundError):
+        manager.respond_to_request("not-the-request-id", holder_token, accept=True)
+
+
+def test_cancel_request_by_requester(manager):
+    manager.acquire("c1", "Alice")
+    request = manager.request_takeover("c2", "9.9.9.9", "Bob")
+    manager.cancel_request(request.request_id, "c2")
+    assert manager.snapshot()["request_pending"] is False
+
+
+def test_cancel_request_by_non_requester_raises(manager):
+    manager.acquire("c1", "Alice")
+    request = manager.request_takeover("c2", "9.9.9.9", "Bob")
+    with pytest.raises(TakeoverNotFoundError):
+        manager.cancel_request(request.request_id, "not-the-requester")
+    assert manager.snapshot()["request_pending"] is True
+
+
+def test_cancel_if_requester_disconnects(manager):
+    manager.acquire("c1", "Alice")
+    manager.request_takeover("c2", "9.9.9.9", "Bob")
+    assert manager.cancel_if_requester("c2") is True
+    assert manager.snapshot()["request_pending"] is False
+
+
+def test_cancel_if_requester_ignores_unrelated_client(manager):
+    manager.acquire("c1", "Alice")
+    manager.request_takeover("c2", "9.9.9.9", "Bob")
+    assert manager.cancel_if_requester("someone-else") is False
+    assert manager.snapshot()["request_pending"] is True
+
+
+def test_check_pending_expiration_before_deadline_is_none(manager, clock):
+    manager.acquire("c1", "Alice")
+    manager.request_takeover("c2", "9.9.9.9", "Bob")
+    clock.advance(9)  # < default 10s takeover_wait
+    assert manager.check_pending_expiration() is None
+
+
+def test_check_pending_expiration_after_deadline_transfers(manager, clock):
+    holder_token = manager.acquire("c1", "Alice")
+    manager.request_takeover("c2", "9.9.9.9", "Bob")
+    clock.advance(11)  # > default 10s takeover_wait
+
+    result = manager.check_pending_expiration()
+
+    assert isinstance(result, TransferResult)
+    assert result.requester_client_id == "c2"
+    assert manager.is_holder(holder_token) is False
+    assert manager.is_holder(result.new_token) is True
+
+
+def test_no_response_includes_holder_disconnected(manager, clock):
+    holder_token = manager.acquire("c1", "Alice")
+    manager.mark_disconnected("c1")
+    manager.request_takeover("c2", "9.9.9.9", "Bob")
+
+    clock.advance(11)
+    result = manager.check_pending_expiration()
+
+    assert isinstance(result, TransferResult)
+    assert result.requester_client_id == "c2"
+
+
+def test_holder_releasing_while_request_pending_grants_requester(manager):
+    holder_token = manager.acquire("c1", "Alice")
+    manager.request_takeover("c2", "9.9.9.9", "Bob")
+
+    result = manager.release(holder_token)
+
+    assert isinstance(result, TransferResult)
+    assert result.requester_client_id == "c2"
+    assert manager.is_holder(holder_token) is False
+    assert manager.snapshot()["holder_display_name"] == "Bob"
+
+
+def test_release_without_pending_request_returns_none(manager):
+    token = manager.acquire("c1", "Alice")
+    assert manager.release(token) is None
