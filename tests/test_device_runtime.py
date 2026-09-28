@@ -114,7 +114,7 @@ def test_auto_open_all_opens_eligible_devices_and_skips_others(bus_manager):
     ]
     manager = DeviceManager(layout, bus_manager)
     futures = manager.auto_open_all()
-    for f in futures:
+    for _name, f in futures:
         f.result(timeout=5)
 
     assert auto_mock.is_open is True
@@ -140,7 +140,7 @@ def test_auto_open_one_failure_does_not_block_others(bus_manager):
     manager = DeviceManager(layout, bus_manager)
     futures = manager.auto_open_all()
     results = []
-    for f in futures:
+    for _name, f in futures:
         try:
             f.result(timeout=5)
             results.append("ok")
@@ -164,7 +164,7 @@ def test_close_all_connected_closes_only_connected_and_survives_failure(bus_mana
         )
     ]
     manager = DeviceManager(layout, bus_manager)
-    for f in manager.auto_open_all():
+    for _name, f in manager.auto_open_all():
         f.result(timeout=5)
 
     failing_device.error_rate = 1.0

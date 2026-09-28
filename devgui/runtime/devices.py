@@ -46,15 +46,15 @@ class DeviceRuntime:
 
         if device.instance is None:
             self._state = DeviceState.NOT_INSTALLED
-        elif self._has_open():
+        elif self.has_open():
             self._state = DeviceState.DISCONNECTED
         else:
             self._state = DeviceState.CONNECTED
 
-    def _has_open(self) -> bool:
+    def has_open(self) -> bool:
         return callable(getattr(self.device.instance, "open", None))
 
-    def _has_close(self) -> bool:
+    def has_close(self) -> bool:
         return callable(getattr(self.device.instance, "close", None))
 
     @property
@@ -70,7 +70,7 @@ class DeviceRuntime:
     def open(self) -> Future:
         if self.device.instance is None:
             raise DeviceNotInstalledError(self.device.name)
-        if not self._has_open():
+        if not self.has_open():
             raise ValueError(f"Device '{self.device.name}' has no open()")
 
         self._set_state(DeviceState.CONNECTING)
@@ -91,7 +91,7 @@ class DeviceRuntime:
     def close(self) -> Future:
         if self.device.instance is None:
             raise DeviceNotInstalledError(self.device.name)
-        if not self._has_close():
+        if not self.has_close():
             raise ValueError(f"Device '{self.device.name}' has no close()")
 
         self._set_state(DeviceState.DISCONNECTING)
@@ -125,13 +125,13 @@ class DeviceManager:
     def get(self, name: str) -> DeviceRuntime:
         return self.runtimes[name]
 
-    def auto_open_all(self) -> list[Future]:
+    def auto_open_all(self) -> list[tuple[str, Future]]:
         """Open every eligible device (section 6.3). One failure does not
         stop the others: each device's open() runs as its own future."""
         futures = []
         for runtime in self.runtimes.values():
             if runtime.device.auto_open and runtime.state == DeviceState.DISCONNECTED:
-                futures.append(runtime.open())
+                futures.append((runtime.device.name, runtime.open()))
         return futures
 
     def close_all_connected(self) -> None:
@@ -139,7 +139,7 @@ class DeviceManager:
         not raised, so shutdown always proceeds."""
         pending: list[tuple[DeviceRuntime, Future]] = []
         for runtime in self.runtimes.values():
-            if runtime.state == DeviceState.CONNECTED and runtime._has_close():
+            if runtime.state == DeviceState.CONNECTED and runtime.has_close():
                 pending.append((runtime, runtime.close()))
 
         for runtime, future in pending:
