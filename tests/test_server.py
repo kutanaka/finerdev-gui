@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from devgui.runtime.bus import BusManager
 from devgui.runtime.devices import DeviceManager, DeviceState
 from devgui.server import create_app
-from devgui.widgets import Button, Category, Device, NumberInput, Select
+from devgui.widgets import Button, Category, Device, Display, NumberInput, Select
 from examples.mock_devices import MockDevice
 
 
@@ -30,6 +30,7 @@ class Harness:
                                 call=lambda v: self.selected.append(v),
                                 options={"Low": 1, "High": 2},
                             ),
+                            Display("Readback", call=self.psu.get, poll=0.02),
                         ],
                         auto_open=False,
                     ),
@@ -71,7 +72,12 @@ def test_api_layout_structure(harness):
         assert psu["name"] == "PSU1"
         assert psu["state"] == "disconnected"
         assert psu["can_open"] is True
-        assert [w["type"] for w in psu["widgets"]] == ["Button", "NumberInput", "Select"]
+        assert [w["type"] for w in psu["widgets"]] == [
+            "Button",
+            "NumberInput",
+            "Select",
+            "Display",
+        ]
         assert psu["widgets"][2]["options"] == ["Low", "High"]
 
         placeholder = data["categories"][1]["devices"][0]
@@ -165,6 +171,24 @@ def test_websocket_hello_and_snapshot(harness):
             assert snapshot["type"] == "snapshot"
             assert snapshot["devices"]["PSU1"]["state"] == "disconnected"
             assert snapshot["devices"]["LOatt3"]["state"] == "not_installed"
+            assert snapshot["displays"] == {"PSU1:3": []}
+
+
+def test_websocket_receives_display_entry_after_device_connects(harness):
+    with TestClient(harness.app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()  # hello
+            ws.receive_json()  # snapshot
+
+            client.post("/api/devices/PSU1/open")
+            ws.receive_json()  # device_state: connecting
+            ws.receive_json()  # device_state: connected
+
+            entry = ws.receive_json(mode="text")
+            assert entry["type"] == "display_entry"
+            assert entry["widget_id"] == "PSU1:3"
+            assert entry["error"] is False
+            assert "t" in entry and "value" in entry
 
 
 def test_websocket_receives_device_state_broadcast_on_manual_open(harness):

@@ -157,9 +157,41 @@ body {
 }
 
 .display-log {
-  font-size: 0.85rem;
+  --visible-rows: 5;
+  max-height: calc(var(--visible-rows) * 1.7em);
+  overflow-y: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  padding: 0.2rem 0.4rem;
+  background: #fafafa;
+}
+
+.display-row {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.1rem 0;
+  border-bottom: 1px dotted #e5e7eb;
+  white-space: nowrap;
+}
+
+.display-row:last-child {
+  border-bottom: none;
+}
+
+.display-row.display-row-error {
+  color: #dc2626;
+}
+
+.display-time {
   color: var(--muted);
-  font-style: italic;
+  flex-shrink: 0;
+}
+
+.display-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #toast-container {

@@ -11,6 +11,9 @@ const state = {
 // name -> { panel, badge, openBtn, closeBtn, errorEl }
 const deviceElements = {};
 
+// widget id -> { container, unit, maxRows }
+const displayElements = {};
+
 async function loadLayout() {
   const res = await fetch("/api/layout");
   state.layout = await res.json();
@@ -230,12 +233,15 @@ function renderWidget(widget) {
       break;
     }
     case "Display": {
-      // Polling + log rendering is added in a later step (design.md
-      // section 8); this is just a placeholder container for now.
       const log = document.createElement("div");
       log.className = "display-log";
-      log.textContent = "(ログ表示は未実装)";
+      log.style.setProperty("--visible-rows", widget.visible_rows);
       wrap.appendChild(log);
+      displayElements[widget.id] = {
+        container: log,
+        unit: widget.unit,
+        maxRows: widget.max_rows,
+      };
       break;
     }
     default:
@@ -303,6 +309,54 @@ function connectWebSocket() {
   });
 }
 
+function formatClock(isoString) {
+  const d = new Date(isoString);
+  const pad = (n, len = 2) => String(n).padStart(len, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+function buildDisplayRow(entry, unit) {
+  const row = document.createElement("div");
+  row.className = entry.error ? "display-row display-row-error" : "display-row";
+
+  const time = document.createElement("span");
+  time.className = "display-time";
+  time.textContent = formatClock(entry.t);
+
+  const value = document.createElement("span");
+  value.className = "display-value";
+  value.textContent = unit && !entry.error ? `${entry.value} ${unit}` : entry.value;
+
+  row.appendChild(time);
+  row.appendChild(value);
+  return row;
+}
+
+// New rows are prepended (newest on top, design.md section 8). While the
+// user has scrolled away from the top to read older rows, inserting a new
+// row above must not change which rows are visible; only when already at
+// the top should the view keep following the newest row.
+function appendDisplayEntry(widgetId, entry) {
+  const el = displayElements[widgetId];
+  if (!el) return;
+
+  const atTop = el.container.scrollTop <= 2;
+  const prevScrollHeight = el.container.scrollHeight;
+
+  const row = buildDisplayRow(entry, el.unit);
+  el.container.insertBefore(row, el.container.firstChild);
+
+  while (el.container.children.length > el.maxRows) {
+    el.container.removeChild(el.container.lastChild);
+  }
+
+  if (atTop) {
+    el.container.scrollTop = 0;
+  } else {
+    el.container.scrollTop += el.container.scrollHeight - prevScrollHeight;
+  }
+}
+
 function handleWsMessage(message) {
   switch (message.type) {
     case "hello":
@@ -312,12 +366,22 @@ function handleWsMessage(message) {
       Object.entries(message.devices).forEach(([name, info]) => {
         applyDeviceState(name, info.state, info.error_message);
       });
+      Object.entries(message.displays || {}).forEach(([widgetId, entries]) => {
+        entries.forEach((entry) => appendDisplayEntry(widgetId, entry));
+      });
       break;
     case "device_state":
       applyDeviceState(message.name, message.state, message.error_message);
       break;
+    case "display_entry":
+      appendDisplayEntry(message.widget_id, {
+        t: message.t,
+        value: message.value,
+        error: message.error,
+      });
+      break;
     default:
-      // display_entry / operator_* / takeover_* / notice: later steps.
+      // operator_* / takeover_* / notice: later steps.
       break;
   }
 }

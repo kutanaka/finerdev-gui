@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from devgui.runtime.bus import BusManager, Priority
 from devgui.runtime.devices import DeviceManager, DeviceNotInstalledError, DeviceRuntime
+from devgui.runtime.poller import Poller
 from devgui.widgets import (
     Button,
     Category,
@@ -132,6 +133,7 @@ def create_app(
         for device in category.devices
         for widget in device.widgets
     }
+    display_ids = [wid for wid, (_, w) in widgets_by_id.items() if isinstance(w, Display)]
 
     connections: set[WebSocket] = set()
     connections_lock = asyncio.Lock()
@@ -166,12 +168,24 @@ def create_app(
     def _track(name: str, future: Future) -> None:
         future.add_done_callback(lambda f: _broadcast_device_state(name))
 
+    def _on_display_entry(widget_id: str, entry: dict[str, Any]) -> None:
+        loop = loop_holder.get("loop")
+        if loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(
+            _broadcast({"type": "display_entry", "widget_id": widget_id, **entry}), loop
+        )
+
+    poller = Poller(layout, device_manager, bus_manager, on_entry=_on_display_entry)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         loop_holder["loop"] = asyncio.get_running_loop()
         for name, future in device_manager.auto_open_all():
             _track(name, future)
+        poller.start()
         yield
+        await poller.stop()
         await asyncio.to_thread(device_manager.close_all_connected)
 
     app = FastAPI(lifespan=lifespan)
@@ -251,6 +265,7 @@ def create_app(
                         name: {"state": rt.state.value, "error_message": rt.error_message}
                         for name, rt in device_manager.runtimes.items()
                     },
+                    "displays": {wid: poller.get_log(wid) for wid in display_ids},
                 }
             )
             while True:
