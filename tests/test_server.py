@@ -140,6 +140,20 @@ def test_api_device_open_unknown_device_404(harness):
         assert resp.status_code == 404
 
 
+def test_static_index_and_assets_are_served(harness):
+    with TestClient(harness.app) as client:
+        index = client.get("/")
+        assert index.status_code == 200
+        assert "devgui" in index.text
+
+        app_js = client.get("/app.js")
+        assert app_js.status_code == 200
+        assert "api/layout" in app_js.text
+
+        style_css = client.get("/style.css")
+        assert style_css.status_code == 200
+
+
 def test_websocket_hello_and_snapshot(harness):
     with TestClient(harness.app) as client:
         with client.websocket_connect("/ws") as ws:

@@ -19,9 +19,11 @@ import logging
 import secrets
 from concurrent.futures import Future
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 
 from devgui.runtime.bus import BusManager, Priority
 from devgui.runtime.devices import DeviceManager, DeviceNotInstalledError, DeviceRuntime
@@ -38,6 +40,8 @@ from devgui.widgets import (
 )
 
 logger = logging.getLogger(__name__)
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _serialize_widget(widget: Widget) -> dict[str, Any]:
@@ -256,5 +260,9 @@ def create_app(
         finally:
             async with connections_lock:
                 connections.discard(websocket)
+
+    # Registered last: falls back to serving devgui/static/* (index.html at
+    # "/") for anything not matched by the API/WebSocket routes above.
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
     return app
