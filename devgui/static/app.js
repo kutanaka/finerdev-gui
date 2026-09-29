@@ -35,10 +35,12 @@ const widgetEnableCallbacks = {};
 async function loadLayout() {
   const res = await fetch("/api/layout");
   state.layout = await res.json();
-  if (state.layout.title) {
-    document.getElementById("app-title").textContent = state.layout.title;
-    document.title = state.layout.title;
-  }
+  // Dummy mode (python -m devgui --dummy): make it impossible to mistake
+  // this screen for one driving real hardware.
+  const title = (state.layout.title || "devgui") + (state.layout.dummy ? " [ダミー]" : "");
+  document.getElementById("app-title").textContent = title;
+  document.title = title;
+  document.body.classList.toggle("dummy-mode", !!state.layout.dummy);
   renderTabs();
 }
 

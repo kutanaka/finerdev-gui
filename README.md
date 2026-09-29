@@ -2,7 +2,7 @@
 
 Ubuntuサーバーに接続された複数の計測器・デバイスを、LAN内のブラウザから操作・監視するWebアプリケーション。
 
-既存のPythonデバイス制御ライブラリをコード変更なしにWeb GUIから操作でき、GUIの構成は1つの `layout.py` で宣言する。詳細な設計は `docs/design.md` を参照。
+既存のPythonデバイス制御ライブラリをコード変更なしにWeb GUIから操作でき、GUIの構成は1つの `layout.py` で宣言する。詳細な設計は `docs/design.md` を参照。サーバの起動・停止と操作権（外部プログラムからの取得・ブロックを含む）の運用手順は `docs/manual.md` を参照。
 
 ## 動作要件
 
@@ -47,6 +47,8 @@ python -m devgui --layout /path/to/layout.py --host 0.0.0.0 --port 8000
 ```
 
 `--host`/`--port` を省略した場合は `layout.py` の `settings`（未指定なら既定値 `0.0.0.0:8000`）を使う。ブラウザで `http://<サーバー>:<port>/` を開く。
+
+`--dummy`（または環境変数 `DEVGUI_DUMMY=1`）でダミーモード（実機に接続しない）になる。`layout.py` 側は `devgui.is_dummy()` で判定する（例: `examples/layout_example.py`）。
 
 ## GPIB等ハードウェアへのアクセス権
 

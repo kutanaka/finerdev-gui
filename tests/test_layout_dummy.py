@@ -1,14 +1,19 @@
-"""examples/layout_dummy.py: the real lab layout, real finerdev
-constructors, dummy device I/O. Skipped where finerdev isn't installed
-(it isn't a devgui dependency)."""
+"""examples/layout_example.py in dummy mode (DEVGUI_DUMMY=1 / --dummy):
+the real lab layout, real finerdev constructors, dummy device I/O from
+examples/finer_dummy.py. Skipped where finerdev isn't installed (it isn't
+a devgui dependency). Only dummy mode is loaded here - real mode would
+open connections to the lab instruments."""
 
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
 
-if "FINER_LOGDIR" not in os.environ:
-    pytest.skip("finerdev needs FINER_LOGDIR at import time", allow_module_level=True)
+# finerdev reads it at import time. An explicit value must survive
+# layout_example.py's own default (checked below); the dummies never
+# write there.
+os.environ.setdefault("FINER_LOGDIR", tempfile.gettempdir())
 pytest.importorskip("finerdev.sourcemeter")
 
 from finerdev.loatt import loatt  # noqa: E402
@@ -17,8 +22,9 @@ from finerdev.sourcemeter import SourceMeter2400, SourceMeter2450  # noqa: E402
 from finerdev.synth import synth  # noqa: E402
 
 from devgui.layout_loader import load_layout  # noqa: E402
+from devgui.mode import DUMMY_ENV  # noqa: E402
 
-LAYOUT = Path(__file__).parent.parent / "examples" / "layout_dummy.py"
+LAYOUT = Path(__file__).parent.parent / "examples" / "layout_example.py"
 
 # name -> (real class, constructor-set attributes from docs/device_list.txt)
 EXPECTED = {
@@ -36,7 +42,17 @@ EXPECTED = {
 
 @pytest.fixture(scope="module")
 def devices():
-    layout = load_layout(LAYOUT)
+    logdir = os.environ["FINER_LOGDIR"]
+    saved = os.environ.get(DUMMY_ENV)
+    os.environ[DUMMY_ENV] = "1"
+    try:
+        layout = load_layout(LAYOUT)
+    finally:
+        if saved is None:
+            del os.environ[DUMMY_ENV]
+        else:
+            os.environ[DUMMY_ENV] = saved
+    assert os.environ["FINER_LOGDIR"] == logdir  # the environment wins over the default
     return {d.name: d for c in layout for d in c.devices}
 
 

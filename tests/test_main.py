@@ -13,6 +13,7 @@ def test_parse_args_defaults():
     assert args.layout == "layout.py"
     assert args.host is None
     assert args.port is None
+    assert args.dummy is False
 
 
 def test_parse_args_host_and_port():
@@ -90,3 +91,34 @@ def test_main_returns_1_and_prints_error_on_invalid_layout(capsys, capture_uvico
     assert capture_uvicorn_run == []
     captured = capsys.readouterr()
     assert "devgui:" in captured.err
+
+
+@pytest.mark.parametrize("value, expected", [("1", True), ("true", True), ("0", False), ("", False)])
+def test_is_dummy_reads_env(monkeypatch, value, expected):
+    from devgui import is_dummy
+
+    monkeypatch.setenv("DEVGUI_DUMMY", value)
+    assert is_dummy() is expected
+
+
+def test_main_dummy_flag_is_visible_to_layout_and_marked_in_ui(
+    write_layout, capture_uvicorn_run, monkeypatch
+):
+    from fastapi.testclient import TestClient
+
+    # setenv (not delenv) so monkeypatch restores the original afterwards,
+    # undoing main()'s own os.environ write too.
+    monkeypatch.setenv("DEVGUI_DUMMY", "0")
+    source = """
+from devgui import Category, Settings, is_dummy
+
+layout = []
+settings = Settings(title="dummy" if is_dummy() else "real")
+"""
+    path = write_layout(source)
+
+    assert main(["--layout", str(path), "--dummy"]) == 0
+    with TestClient(capture_uvicorn_run[0]["app"]) as client:
+        data = client.get("/api/layout").json()
+    assert data["title"] == "dummy"
+    assert data["dummy"] is True

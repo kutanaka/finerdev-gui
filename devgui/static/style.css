@@ -39,6 +39,18 @@ body {
   color: white;
 }
 
+/* Dummy mode (no hardware): a top bar that can't be mistaken for the
+   real one. */
+body.dummy-mode #top-bar {
+  background: repeating-linear-gradient(
+    -45deg,
+    #92400e,
+    #92400e 14px,
+    #78350f 14px,
+    #78350f 28px
+  );
+}
+
 #app-title {
   font-weight: 600;
   font-size: 1.1rem;

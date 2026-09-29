@@ -1,12 +1,13 @@
-"""The real lab layout (examples/layout_example.py) with dummy device I/O.
+"""Dummy device I/O for examples/layout_example.py's dummy mode
+(`python -m devgui --layout examples/layout_example.py --dummy`).
 
-Every device instance is still built by finerdev's real, unmodified
-constructor with the real arguments from docs/device_list.txt - so a
-wrong class name, a wrong keyword, or a missing argument fails here
-exactly as it would in the lab. Only the methods that talk to hardware
-(open/close/dev and every method a widget calls) are replaced, on the
-finerdev classes themselves, by in-memory dummies *before* layout_example
-constructs anything. That ordering matters: loatt/synth/mp call open()
+`install()` replaces the methods that talk to hardware (open/close/dev
+and every method a widget calls) on the finerdev classes themselves with
+in-memory dummies. layout_example.py calls it *before* constructing any
+instance, and still builds every device with finerdev's real, unmodified
+constructor and the real arguments from docs/device_list.txt - so a
+wrong class name, a wrong keyword, or a missing argument fails exactly
+as it would in the lab. The ordering matters: loatt/synth/mp call open()
 (and loatt also dev()/get()) from inside __init__, and the widgets bind
 `dev.setV` etc. at layout time, so both must already see the dummies.
 
@@ -15,12 +16,9 @@ Each dummy must match the real method's name and signature exactly
 the same as with real hardware, and a finerdev API change is caught at
 load time instead of silently diverging.
 
-This file requires the `finerdev` package and FINER_LOGDIR (read by
-finerdev at import time), but no network access to any instrument.
-The dummies never write under FINER_LOGDIR (unlike the real loatt.set).
-
-Run with:
-    python -m devgui --layout examples/layout_dummy.py
+Requires the `finerdev` package and FINER_LOGDIR (read by finerdev at
+import time), but no network access to any instrument. The dummies never
+write under FINER_LOGDIR (unlike the real loatt.set).
 """
 
 import inspect
@@ -142,12 +140,11 @@ def _install(cls, dummy):
             setattr(cls, name, fn)
 
 
-_install(SourceMeter2400, _SourceMeterDummy)
-_install(SourceMeter2450, _SourceMeterDummy)
-_install(loatt, _LoattDummy)
-_install(synth, _SynthDummy)
-_install(mp, _MpDummy)
-
-from layout_example import layout  # noqa: E402  (must follow _install)
-
-__all__ = ["layout"]
+def install():
+    """Patch every finerdev class layout_example.py uses. Process-wide and
+    irreversible - call only in a process that must never touch hardware."""
+    _install(SourceMeter2400, _SourceMeterDummy)
+    _install(SourceMeter2450, _SourceMeterDummy)
+    _install(loatt, _LoattDummy)
+    _install(synth, _SynthDummy)
+    _install(mp, _MpDummy)

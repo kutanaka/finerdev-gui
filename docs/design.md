@@ -69,7 +69,8 @@ devgui/
 │       └── style.css
 ├── examples/
 │   ├── mock_devices.py      # テスト・動作確認用のダミーデバイス
-│   └── layout_example.py
+│   ├── layout_example.py    # 実機レイアウト（--dummy でダミーモード）
+│   └── finer_dummy.py       # ダミーモード用の finerdev 通信ダミー
 ├── tests/
 └── deploy/
     └── devgui.service       # systemdユニット例
@@ -78,8 +79,10 @@ devgui/
 起動方法:
 
 ```
-python -m devgui --layout /path/to/layout.py --host 0.0.0.0 --port 8000
+python -m devgui --layout /path/to/layout.py --host 0.0.0.0 --port 8000 [--dummy]
 ```
+
+`--dummy`（または環境変数 `DEVGUI_DUMMY=1`）はダミーモード（実機に接続しない）。devgui自身は画面上の表示（タイトルに「[ダミー]」、上部バーの色）を変えるだけで、実際に何をダミーにするかは `layout.py` が `devgui.is_dummy()` を見て決める（`layout.py` の読み込み前に確定する）。
 
 ---
 

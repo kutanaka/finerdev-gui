@@ -1,3 +1,4 @@
+from devgui.mode import is_dummy
 from devgui.settings import Settings
 from devgui.widgets import (
     Button,
@@ -24,4 +25,5 @@ __all__ = [
     "TextInput",
     "Display",
     "Settings",
+    "is_dummy",
 ]

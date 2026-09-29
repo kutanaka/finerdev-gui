@@ -4,27 +4,48 @@ See docs/finerdev_devices.md for the full device_list.txt -> instance
 mapping and the known mismatches between finerdev's actual behavior and
 design.md's idealized assumptions (accepted as-is per project decision).
 
-This file requires:
-- The `finerdev` package installed and importable.
-- The FINER_LOGDIR environment variable set (several finerdev modules
-  read it at import time and raise KeyError otherwise).
-- Network access to the `prologix` GPIB-Ethernet bridge and to
-  finer-sm3/finer-sm4/finer-sg45/finer-sg67/finer-mp.
+Two modes, chosen at startup:
 
-It will NOT import successfully on a machine without that real lab
-environment - it is not exercised by the test suite (which uses
-examples/mock_devices.py instead) or by the manual mock-device
-walkthrough in README.md.
+    python -m devgui --layout examples/layout_example.py           # real hardware
+    python -m devgui --layout examples/layout_example.py --dummy   # no hardware
 
-Run with:
-    python -m devgui --layout examples/layout_example.py
+(or DEVGUI_DUMMY=1 instead of --dummy). Dummy mode installs
+examples/finer_dummy.py's in-memory I/O on the finerdev classes before
+anything is constructed; the instances themselves are still built by
+finerdev's real constructors with the real addresses.
+
+Requires the `finerdev` package in both modes. FINER_LOGDIR (read by
+several finerdev modules at import time) defaults to ~/finer/log when
+it isn't already set in the environment - an explicit value always wins.
+Real mode also needs network access to the `prologix` GPIB-Ethernet
+bridge and to finer-sm3/finer-sm4/finer-sg45/finer-sg67/finer-mp.
 """
 
-from devgui import Category, Device, DigitInput, Display, NumberInput, SourceMeasure, Toggle
-from finerdev.loatt import loatt
-from finerdev.multiplier import mp
-from finerdev.sourcemeter import SourceMeter2400, SourceMeter2450
-from finerdev.synth import synth
+import os
+from pathlib import Path
+
+# Must precede the finerdev imports below (they read it at import time).
+os.environ.setdefault("FINER_LOGDIR", str(Path.home() / "finer" / "log"))
+
+from devgui import (  # noqa: E402
+    Category,
+    Device,
+    DigitInput,
+    Display,
+    NumberInput,
+    SourceMeasure,
+    Toggle,
+    is_dummy,
+)
+from finerdev.loatt import loatt  # noqa: E402
+from finerdev.multiplier import mp  # noqa: E402
+from finerdev.sourcemeter import SourceMeter2400, SourceMeter2450  # noqa: E402
+from finerdev.synth import synth  # noqa: E402
+
+if is_dummy():
+    import finer_dummy
+
+    finer_dummy.install()  # before any instance below is constructed
 
 GPIB_BUS = "gpib-prologix"  # SourceMeter1/2 and LO att1/2 share one physical
 # GPIB-Ethernet bridge ("prologix"); they must serialize on the same bus.

@@ -381,6 +381,7 @@ def create_app(
     operator_takeover_cooldown: float = 30.0,
     title: str = "devgui",
     priority_hosts: tuple[str, ...] = ("127.0.0.1", "::1"),
+    dummy: bool = False,
 ) -> FastAPI:
     widgets_by_id: dict[str, tuple[Device, Widget]] = {
         widget.id: (device, widget)
@@ -631,7 +632,10 @@ def create_app(
 
     @app.get("/api/layout")
     async def api_layout() -> dict[str, Any]:
-        return _serialize_layout(layout, device_manager, title, source_measure_states)
+        return {
+            **_serialize_layout(layout, device_manager, title, source_measure_states),
+            "dummy": dummy,
+        }
 
     @app.post("/api/call/{widget_id}")
     async def api_call(

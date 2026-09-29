@@ -28,7 +28,7 @@
 3. **`open`/`close`という名前ではないクラスがある**: `DRS4client`/`OPTclient`は`openTCP`/`closeTCP`。design.md §6.2の`hasattr(instance, "open")`による自動判定では検出されない。
 4. **`open()`が例外ではなくboolを返す**: `EtherScpi.open()`（→`EtherGpib`→`SourceMeter2400`/`loatt`/`synth`/`mp`が継承）は失敗時に`False`を返すのみで例外を投げない。
 5. ~~`synth`モジュールはクラスではない~~ → 2026-09-28時点で解消済み（`finerdev.synth.synth`クラスが追加された）。
-6. **`FINER_LOGDIR`環境変数が必須**: `loatt`, `mp`, `synth`, `SourceMeter2400`, `SourceMeter2450`はモジュールレベルで`os.environ['FINER_LOGDIR']`を読む。**現在このマシンでは未設定**であり、設定しないままこれらのモジュールをimportすると`KeyError`で即座に失敗する。devguiサーバーの実行環境（systemdユニット等）で必ず設定する必要がある。
+6. **`FINER_LOGDIR`環境変数が必須**: `loatt`, `mp`, `synth`, `SourceMeter2400`, `SourceMeter2450`はモジュールレベルで`os.environ['FINER_LOGDIR']`を読み、未設定だと import 時に`KeyError`で失敗する。`examples/layout_example.py`は finerdev の import 前に、環境変数が未設定のときだけ`~/finer/log`を設定する（設定済みならその値を優先）。
 7. **`loatt.set()`のバグ**: 範囲外の値で`raise("...")`（文字列を直接raise）しており、Python 3では`TypeError: exceptions must derive from BaseException`になる（意図した`ValueError`にはならない）。devgui側のエラー表示は例外の型とメッセージをそのまま出す設計（design.md §10）なので、この場合は分かりにくいエラーが表示される点に注意。
 8. **`EtherScpi.open()`に接続タイムアウトが無い**: `socket.connect()`にタイムアウトを設定していないため、ホスト名が名前解決できてもTCP的に到達不能（ファイアウォール等でSYNが無視される場合等）だと、OSのデフォルトのTCP接続タイムアウトまで`open()`がブロックし得る。`synth`/`mp`はコンストラクタで`open()`を呼ぶため、**該当ホストが起動時に到達不能だと`layout.py`の読み込み自体が長時間ブロックする**（`examples/layout_example.py`を実機ネットワーク外の開発機で試した際に実際に発生し確認済み）。ラボ側のネットワークが健全であれば通常問題にならないが、起動時にすべての対象ホストが疎通していることを確認しておくとよい。
 
