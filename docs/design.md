@@ -147,11 +147,27 @@ layout = [
 | `Select(label, call, options)` | `call(選択値)` | `options` はリスト、または `{表示名: 値}` の辞書 |
 | `TextInput(label, call, default="")` | `call(str)` | 入力欄＋「送信」ボタン |
 | `Display(label, call, unit=None, poll=1.0, fmt=None, visible_rows=5, max_rows=50)` | `call()` を `poll` 秒ごと | 戻り値を時刻付きでログ表示（8章） |
+| `SourceMeasure(label, call, *, output, meas, sweep, get, message=None, min=None, max=None, step=None, sweep_default=(0, 0, 0), voltage_unit="V", current_unit="A")` | 下記 | ソースメータ用の複合部品。部品間に依存関係（出力ONの間だけ測定可、測定結果で電圧欄と電流欄を更新）があるため1部品にまとめている。下記参照 |
+
+**`SourceMeasure`** の画面と動作:
+
+- 画面上の電圧・電流（入力欄、sweepパラメータ、電流欄、グラフの軸）はすべて `voltage_unit`（`"V"`/`"mV"`/`"uV"`）・`current_unit`（`"A"`/`"mA"`/`"uA"`/`"nA"`）の単位で表示・入力する。`min`/`max`/`step`/`sweep_default` もこの単位で指定する。デバイスのメソッドには常にV/Aで渡し、V/Aで受け取る（例: `voltage_unit="mV"` で 2 と入力 → `setV(0.002)`）。
+- 「電圧設定」入力欄＋「meas」「キャンセル」ボタン。入力欄は `NumberInput(get=...)` と同じく、確定値と異なる間は青字になり「キャンセル」で確定値に戻る。「meas」は `call(電圧)` → `meas()` → `get()` を1つのバスジョブとして順に実行する。
+- 「電流」表示欄（ユーザーは編集不可）。
+- 「出力ON/OFF」スイッチ: `output(bool)` を呼ぶ。
+- 「sweep」: vstart / vend / vstep の入力欄と「sweep」ボタン。`sweep(vstart, vend, vstep)` → `get()` を実行する。
+- 「I-V」グラフ（横軸 電圧、縦軸 電流）と「PDF」ボタン（最後のsweepのグラフをPDFでダウンロード。操作権不要）。
+- `get()` の戻り値は `[電流, 電圧, ...]`（meas）またはその行の並び（sweep、行数不定）。list でも numpy 配列でもよく、3列目以降は無視する。meas では唯一の行、sweep では最後の行を最新の電流・電圧として電流欄と電圧欄（確定値）に反映する。
+- 「meas」「sweep」は出力ONの間だけ有効（サーバー側でも拒否する）。電圧・vstart・vend は min/max をサーバー側でも検証し、vstep > 0、vstart <= vend も検証する。
+- 各デバイスメソッドが厳密に `False` を返した場合は失敗として扱う（finerdevの慣習）。`message`（例: finerdevの `get_message`）を指定すると、そのとき理由の取得に呼ぶ。
+- 出力状態・最後の測定値・最後のsweepはサーバー側で保持し、`widget_value` で全クライアントに配信する（再読込や別端末でも同じ表示）。デバイスの `open()` 成功時は、実機のリセットに合わせて出力状態をOFFに戻す。
+- コマンドログ（8.2）には、実際に呼ばれた各メソッド（`setV(0.002) -> True` など）を1行ずつ記録する。
 
 - 各部品には、起動時に一意なID（例: `"{device_name}:{index}"`）を割り振る。
 - `call` の戻り値は、`Display` 以外では無視する（成功表示のみ）。例外はエラーとして扱う（10章）。
 - 操作系部品（Display以外）は、操作権を持つクライアントのみ実行可能（9章）。
 - `Toggle` と `Select` は、実機の状態を読み戻す機能を持たない（画面上の値は最後に送った値）。
+- `SourceMeasure` は `/api/call` の body に `"action"`（`"output"` / `"meas"` / `"sweep"`）を付ける（7.2）。
 
 ### 4.4 読み込みと検証
 
@@ -236,7 +252,8 @@ layout = [
 | メソッド | パス | 説明 | 操作権 |
 |---|---|---|---|
 | GET | `/api/layout` | 画面構成のJSON | 不要 |
-| POST | `/api/call/{widget_id}` | 部品の関数を実行。body: `{"value": ...}` | 必要 |
+| POST | `/api/call/{widget_id}` | 部品の関数を実行。body: `{"value": ...}`（`SourceMeasure` は `{"action": "output"\|"meas"\|"sweep", "value": ...}`、sweepの value は `{"vstart", "vend", "vstep"}`） | 必要 |
+| GET | `/api/widgets/{widget_id}/iv.pdf` | `SourceMeasure` の最後のsweepのI-VグラフPDF（未測定なら404） | 不要 |
 | POST | `/api/devices/{name}/open` | 手動接続 | 必要 |
 | POST | `/api/devices/{name}/close` | 手動切断 | 必要 |
 | POST | `/api/operator/acquire` | 操作権取得（空いている場合） | — |

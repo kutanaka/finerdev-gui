@@ -346,6 +346,124 @@ body {
   font-weight: 600;
 }
 
+/* SourceMeasure (design.md section 4.3): one widget laid out as several
+   labeled sections, each styled like a stand-alone widget. */
+.source-measure {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.sm-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.sm-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.sm-row input {
+  flex: 1 1 6rem;
+  min-width: 0;
+}
+
+.source-measure input.pending {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.source-measure input.sm-readonly {
+  background: #f3f4f6;
+  border: 1px solid var(--border);
+  font-family: ui-monospace, monospace;
+}
+
+.sm-sweep-fields {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.4rem;
+}
+
+.widget .sm-sweep-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.75rem;
+}
+
+.sm-sweep-field input {
+  width: 100%;
+  min-width: 0;
+}
+
+.iv-plot {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  background: #fafafa;
+}
+
+.iv-frame {
+  fill: none;
+  stroke: #9ca3af;
+  stroke-width: 0.8;
+}
+
+.iv-grid {
+  stroke: #e5e7eb;
+  stroke-width: 0.6;
+}
+
+.iv-tick {
+  font-size: 8px;
+  fill: var(--muted);
+}
+
+.iv-tick-x,
+.iv-axis-label,
+.iv-empty {
+  text-anchor: middle;
+}
+
+.iv-tick-y {
+  text-anchor: end;
+}
+
+.iv-axis-label {
+  font-size: 9px;
+  fill: var(--text);
+}
+
+.iv-empty {
+  font-size: 10px;
+  fill: var(--muted);
+}
+
+.iv-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.2;
+}
+
+.iv-point {
+  fill: var(--accent);
+}
+
+.sm-plot-footer {
+  justify-content: space-between;
+}
+
+.sm-plot-info {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
 .display-log {
   --visible-rows: 5;
   max-height: calc(var(--visible-rows) * 1.7em);

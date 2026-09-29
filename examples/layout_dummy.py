@@ -25,6 +25,8 @@ Run with:
 
 import inspect
 
+import numpy as np
+
 from finerdev.loatt import loatt
 from finerdev.multiplier import mp
 from finerdev.sourcemeter import SourceMeter2400, SourceMeter2450
@@ -43,8 +45,15 @@ class _Connection:
         return True
 
 
+def _dummy_current(volt):
+    """A diode-ish I-V curve in the 0-5 mV range, plus a little noise."""
+    return volt / 2000 + 2e-7 * (np.exp(volt / 0.001) - 1) + np.random.normal(0, 2e-8)
+
+
 class _SourceMeterDummy(_Connection):
-    # get() is left real: it only returns self.val, with no I/O.
+    # get()/get_message() are left real: they only return self.val/self.msg,
+    # with no I/O. meas()/measIV() store [current, voltage, 0, 0, 0] rows
+    # there, the layout devgui expects from get().
 
     def setV(self, volt):
         self.dummy_volt = volt
@@ -52,6 +61,16 @@ class _SourceMeterDummy(_Connection):
 
     def output(self, onOff):
         self.dummy_output = bool(onOff)
+        return True
+
+    def meas(self):
+        volt = getattr(self, "dummy_volt", 0.0)
+        self.val = np.array([_dummy_current(volt), volt, 0.0, 0.0, 0.0])
+        return True
+
+    def measIV(self, vstart, vend, vstep):
+        volts = np.arange(vstart, vend + vstep / 2, vstep)
+        self.val = np.array([[_dummy_current(v), v, 0.0, 0.0, 0.0] for v in volts])
         return True
 
 

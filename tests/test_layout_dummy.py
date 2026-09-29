@@ -56,6 +56,10 @@ def test_widget_calls_hit_dummies_not_hardware(devices):
     sm = devices["SourceMeter3"].instance
     assert sm.open() is True and sm.isOpen
     assert sm.setV(0.001) is True and sm.dummy_volt == 0.001
+    assert sm.meas() is True
+    assert sm.get()[1] == 0.001  # [current, voltage, ...]
+    assert sm.measIV(0.0, 0.005, 0.001) is True
+    assert sm.get().shape == (6, 5)
 
     att = devices["LO att1"].instance
     assert att.set(123) is True and att.get() == 123

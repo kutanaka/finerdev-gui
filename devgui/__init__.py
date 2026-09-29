@@ -7,6 +7,7 @@ from devgui.widgets import (
     Display,
     NumberInput,
     Select,
+    SourceMeasure,
     TextInput,
     Toggle,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "DigitInput",
     "Toggle",
     "Select",
+    "SourceMeasure",
     "TextInput",
     "Display",
     "Settings",

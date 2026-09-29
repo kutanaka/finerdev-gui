@@ -218,7 +218,8 @@ function renderWidget(widget) {
   const wrap = document.createElement("div");
   wrap.className = "widget";
 
-  if (widget.type !== "Button") {
+  // SourceMeasure labels each of its own sub-controls instead.
+  if (widget.type !== "Button" && widget.type !== "SourceMeasure") {
     const label = document.createElement("label");
     label.textContent = widget.unit ? `${widget.label} [${widget.unit}]` : widget.label;
     wrap.appendChild(label);
@@ -265,48 +266,13 @@ function renderWidget(widget) {
       break;
     }
     case "Toggle": {
-      // Rendered as "OFF [slide switch] ON" rather than a bare checkbox
-      // (design.md section 11): the checkbox itself still drives all
-      // state/enable-disable logic (data-operant, .checked, "change"),
-      // just visually hidden - see .switch/.switch-slider in style.css.
-      const switchWrap = document.createElement("div");
-      switchWrap.className = "switch-wrap";
-
-      const onText = document.createElement("span");
-      onText.className = "switch-text";
-      onText.textContent = "ON";
-
-      const switchLabel = document.createElement("label");
-      switchLabel.className = "switch";
-
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = !!widget.default;
-      input.dataset.operant = "true";
-
-      const slider = document.createElement("span");
-      slider.className = "switch-slider";
-
-      const offText = document.createElement("span");
-      offText.className = "switch-text";
-      offText.textContent = "OFF";
-
-      const updateSwitchText = () => {
-        onText.classList.toggle("switch-text-active", input.checked);
-        offText.classList.toggle("switch-text-active", !input.checked);
-      };
-      input.addEventListener("change", () => {
-        updateSwitchText();
-        callWidget(widget.id, input.checked);
-      });
-      updateSwitchText();
-
-      switchLabel.appendChild(input);
-      switchLabel.appendChild(slider);
-      switchWrap.appendChild(offText);
-      switchWrap.appendChild(switchLabel);
-      switchWrap.appendChild(onText);
-      wrap.appendChild(switchWrap);
+      const sw = buildSwitch(!!widget.default, (checked) => callWidget(widget.id, checked));
+      sw.input.dataset.operant = "true";
+      wrap.appendChild(sw.element);
+      break;
+    }
+    case "SourceMeasure": {
+      wrap.appendChild(renderSourceMeasure(widget));
       break;
     }
     case "Select": {
@@ -361,6 +327,58 @@ function renderWidget(widget) {
   widgetErrorElements[widget.id] = errorEl;
 
   return wrap;
+}
+
+// "OFF [slide switch] ON" rather than a bare checkbox (design.md section
+// 11): the checkbox itself still drives all state/enable-disable logic
+// (.checked, .disabled, "change"), just visually hidden - see .switch/
+// .switch-slider in style.css. `setChecked` updates the switch without
+// firing onChange, for reflecting server-side state.
+function buildSwitch(checked, onChange) {
+  const switchWrap = document.createElement("div");
+  switchWrap.className = "switch-wrap";
+
+  const onText = document.createElement("span");
+  onText.className = "switch-text";
+  onText.textContent = "ON";
+
+  const switchLabel = document.createElement("label");
+  switchLabel.className = "switch";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = checked;
+
+  const slider = document.createElement("span");
+  slider.className = "switch-slider";
+
+  const offText = document.createElement("span");
+  offText.className = "switch-text";
+  offText.textContent = "OFF";
+
+  const updateSwitchText = () => {
+    onText.classList.toggle("switch-text-active", input.checked);
+    offText.classList.toggle("switch-text-active", !input.checked);
+  };
+  input.addEventListener("change", () => {
+    updateSwitchText();
+    onChange(input.checked);
+  });
+  updateSwitchText();
+
+  switchLabel.appendChild(input);
+  switchLabel.appendChild(slider);
+  switchWrap.appendChild(offText);
+  switchWrap.appendChild(switchLabel);
+  switchWrap.appendChild(onText);
+  return {
+    element: switchWrap,
+    input,
+    setChecked(value) {
+      input.checked = value;
+      updateSwitchText();
+    },
+  };
 }
 
 // A decimal digit-wheel input: each digit has its own up/down buttons and
@@ -576,6 +594,252 @@ function renderGettableNumberInput(widget) {
   return container;
 }
 
+// A source meter's whole control set (design.md section 4.3): voltage
+// entry with the same pending/cancel behavior as a gettable NumberInput
+// but committed by "meas" (setV -> meas -> get on the server), a read-only
+// current field, the output switch, and an I-V sweep with its plot.
+// "meas"/"sweep" are only enabled while the output is on. The output
+// switch, last reading and last sweep are server-side state, pushed to
+// every client as a "widget_value" message.
+function renderSourceMeasure(widget) {
+  const container = document.createElement("div");
+  container.className = "source-measure";
+  container.dataset.customEnableId = widget.id;
+
+  // Everything here (entry, sweep params, readings, plot) is in the
+  // widget's voltage_unit/current_unit; the server converts to V/A for
+  // the device calls.
+  const vUnit = unitLabel(widget.voltage_unit);
+  const iUnit = unitLabel(widget.current_unit);
+  let smState = widget.state || { output: false, voltage: null, current: null, sweep: null };
+  let confirmedVoltage = 0;
+  let deviceEnabled = false;
+  let busy = false;
+
+  const section = (labelText, ...children) => {
+    const el = document.createElement("div");
+    el.className = "sm-section";
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    el.appendChild(label);
+    children.forEach((c) => el.appendChild(c));
+    container.appendChild(el);
+    return el;
+  };
+  const numberInput = (value) => {
+    const input = document.createElement("input");
+    input.type = "number";
+    if (widget.step != null) input.step = widget.step;
+    if (widget.min != null) input.min = widget.min;
+    if (widget.max != null) input.max = widget.max;
+    input.value = value;
+    return input;
+  };
+  const button = (text, onClick) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = text;
+    btn.addEventListener("click", onClick);
+    return btn;
+  };
+  const row = (className, ...children) => {
+    const el = document.createElement("div");
+    el.className = className;
+    children.forEach((c) => el.appendChild(c));
+    return el;
+  };
+
+  // --- voltage entry + meas/cancel ---
+  const voltInput = numberInput(0);
+  const measBtn = button("meas", () => run("meas", Number(voltInput.value)));
+  const cancelBtn = button("キャンセル", () => {
+    voltInput.value = confirmedVoltage;
+    render();
+  });
+  voltInput.addEventListener("input", () => render());
+  section(`電圧設定 [${vUnit}]`, row("sm-row", voltInput, measBtn, cancelBtn));
+
+  // --- measured current (display only) ---
+  const currentInput = document.createElement("input");
+  currentInput.type = "text";
+  currentInput.readOnly = true;
+  currentInput.tabIndex = -1;
+  currentInput.className = "sm-readonly";
+  section(`電流 [${iUnit}]`, currentInput);
+
+  // --- output switch ---
+  const sw = buildSwitch(!!smState.output, (checked) => run("output", checked));
+  section("出力ON/OFF", sw.element);
+
+  // --- sweep ---
+  const [defStart, defEnd, defStep] = widget.sweep_default || [0, 0, 0];
+  const sweepInputs = {
+    vstart: numberInput(defStart),
+    vend: numberInput(defEnd),
+    vstep: numberInput(defStep),
+  };
+  const sweepFields = Object.entries(sweepInputs).map(([name, input]) => {
+    const field = document.createElement("label");
+    field.className = "sm-sweep-field";
+    field.append(`${name} [${vUnit}]`, input);
+    input.addEventListener("input", () => render());
+    return field;
+  });
+  const sweepBtn = button("sweep", () =>
+    run("sweep", {
+      vstart: Number(sweepInputs.vstart.value),
+      vend: Number(sweepInputs.vend.value),
+      vstep: Number(sweepInputs.vstep.value),
+    })
+  );
+  section("sweep", row("sm-sweep-fields", ...sweepFields), sweepBtn);
+
+  // --- I-V plot + PDF ---
+  const plot = document.createElementNS(SVG_NS, "svg");
+  plot.setAttribute("class", "iv-plot");
+  const plotInfo = document.createElement("span");
+  plotInfo.className = "sm-plot-info";
+  const pdfBtn = button("PDF", () => {
+    window.location.href = `/api/widgets/${encodeURIComponent(widget.id)}/iv.pdf`;
+  });
+  section("I-V", plot, row("sm-row sm-plot-footer", plotInfo, pdfBtn));
+
+  const voltageValid = () => voltInput.value !== "" && Number.isFinite(Number(voltInput.value));
+  const isPending = () => Number(voltInput.value) !== confirmedVoltage || !voltageValid();
+  const sweepValid = () =>
+    Object.values(sweepInputs).every((i) => i.value !== "" && Number.isFinite(Number(i.value)));
+
+  function render() {
+    const canOperate = deviceEnabled && !busy;
+    const measurable = canOperate && !!smState.output;
+    voltInput.disabled = !canOperate;
+    voltInput.classList.toggle("pending", isPending());
+    measBtn.disabled = !(measurable && voltageValid());
+    cancelBtn.disabled = !(canOperate && isPending());
+    sw.input.disabled = !canOperate;
+    Object.values(sweepInputs).forEach((i) => {
+      i.disabled = !canOperate;
+    });
+    sweepBtn.disabled = !(measurable && sweepValid());
+    pdfBtn.disabled = !smState.sweep;
+  }
+
+  function applyState(next) {
+    const prev = smState;
+    smState = next;
+    sw.setChecked(!!next.output);
+    if (next.voltage != null && next.voltage !== prev.voltage) {
+      confirmedVoltage = Number(next.voltage.toPrecision(6));
+      voltInput.value = confirmedVoltage;
+    }
+    currentInput.value = next.current == null ? "" : String(Number(next.current.toPrecision(5)));
+    if (next.sweep !== prev.sweep || !plot.hasChildNodes()) {
+      drawIVPlot(plot, next.sweep ? next.sweep.rows : [], vUnit, iUnit);
+      plotInfo.textContent = next.sweep
+        ? `${formatClock(next.sweep.t)} / ${next.sweep.rows.length}点`
+        : "";
+    }
+    render();
+  }
+
+  async function run(action, value) {
+    busy = true;
+    render();
+    const body = await postWidgetCall(widget.id, { action, value });
+    busy = false;
+    if (body) {
+      applyState(body.state);
+    } else {
+      if (action === "meas") voltInput.value = confirmedVoltage;
+      applyState(smState); // e.g. put a rejected output switch back
+    }
+  }
+
+  widgetEnableCallbacks[widget.id] = (enabled) => {
+    deviceEnabled = enabled;
+    render();
+  };
+  gettableWidgetControllers[widget.id] = applyState;
+
+  applyState(smState);
+  return container;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+// Round-number axis ticks (1/2/5 x 10^k) whose first/last tick bracket
+// [lo, hi] - the same rule as devgui/ivplot.py's nice_ticks, so the
+// on-screen plot and the PDF agree.
+function niceTicks(lo, hi, target = 5) {
+  if (hi < lo) [lo, hi] = [hi, lo];
+  if (hi === lo) {
+    const pad = Math.abs(lo) * 0.1 || 1;
+    lo -= pad;
+    hi += pad;
+  }
+  const raw = (hi - lo) / target;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+  const first = Math.floor(lo / step + 1e-9);
+  const last = Math.ceil(hi / step - 1e-9);
+  const ticks = [];
+  for (let i = first; i <= last; i++) ticks.push(Number((i * step).toPrecision(12)));
+  return ticks;
+}
+
+// "uA" (layout.py's ASCII spelling) -> "µA", as devgui/ivplot.py does.
+function unitLabel(unit) {
+  return unit.startsWith("u") ? `µ${unit.slice(1)}` : unit;
+}
+
+function drawIVPlot(svg, rows, vUnit, iUnit) {
+  const W = 260;
+  const H = 180;
+  const L = 44;
+  const R = 8;
+  const T = 8;
+  const B = 32;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = "";
+  const add = (tag, attrs, text) => {
+    const el = document.createElementNS(SVG_NS, tag);
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+    if (text != null) el.textContent = text;
+    svg.appendChild(el);
+    return el;
+  };
+  add("rect", { x: L, y: T, width: W - L - R, height: H - T - B, class: "iv-frame" });
+  if (!rows.length) {
+    add("text", { x: (L + W - R) / 2, y: (T + H - B) / 2, class: "iv-empty" }, "sweep データなし");
+    return;
+  }
+  const volts = rows.map((r) => r[1]);
+  const amps = rows.map((r) => r[0]);
+  const xt = niceTicks(Math.min(...volts), Math.max(...volts));
+  const yt = niceTicks(Math.min(...amps), Math.max(...amps));
+  const px = (v) => L + ((v - xt[0]) / (xt[xt.length - 1] - xt[0])) * (W - L - R);
+  const py = (i) => H - B - ((i - yt[0]) / (yt[yt.length - 1] - yt[0])) * (H - T - B);
+  const fmt = (v) => String(Number(v.toPrecision(6)));
+
+  xt.forEach((t, k) => {
+    if (k > 0 && k < xt.length - 1) add("line", { x1: px(t), x2: px(t), y1: T, y2: H - B, class: "iv-grid" });
+    add("text", { x: px(t), y: H - B + 11, class: "iv-tick iv-tick-x" }, fmt(t));
+  });
+  yt.forEach((t, k) => {
+    if (k > 0 && k < yt.length - 1) add("line", { x1: L, x2: W - R, y1: py(t), y2: py(t), class: "iv-grid" });
+    add("text", { x: L - 3, y: py(t) + 3, class: "iv-tick iv-tick-y" }, fmt(t));
+  });
+  add("text", { x: (L + W - R) / 2, y: H - 4, class: "iv-axis-label" }, `電圧 [${vUnit}]`);
+  add(
+    "text",
+    { x: 0, y: 0, class: "iv-axis-label", transform: `translate(10 ${(T + H - B) / 2}) rotate(-90)` },
+    `電流 [${iUnit}]`
+  );
+  const points = rows.map((r) => `${px(r[1]).toFixed(1)},${py(r[0]).toFixed(1)}`).join(" ");
+  add("polyline", { points, class: "iv-line" });
+  rows.forEach((r) => add("circle", { cx: px(r[1]), cy: py(r[0]), r: 1.8, class: "iv-point" }));
+}
+
 function operatorRequestHeaders(extra) {
   const headers = { "X-Client-Id": state.clientId || "" };
   if (state.operatorToken) headers["X-Operator-Token"] = state.operatorToken;
@@ -595,33 +859,39 @@ function handleOperatorRejection() {
   clearOperatorTokenLocal();
 }
 
-// Returns true/false so callers that need to know the outcome (e.g.
-// DigitInput reverting to its last confirmed value on rejection) can react;
-// callWidget itself just fires and forgets for widgets that don't need to.
-async function callWidgetForResult(widgetId, value) {
+// Returns the response body on success, or null on any failure (already
+// reported via toast + the widget's own error line).
+async function postWidgetCall(widgetId, payload) {
   try {
     const res = await fetch(`/api/call/${encodeURIComponent(widgetId)}`, {
       method: "POST",
       headers: operatorRequestHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ value }),
+      body: JSON.stringify(payload),
     });
     if (res.status === 403) {
       handleOperatorRejection();
-      return false;
+      return null;
     }
     const body = await res.json();
     if (!body.ok) {
       showToast(`エラー: ${body.error}`, true);
       setWidgetError(widgetId, body.error);
-      return false;
+      return null;
     }
     setWidgetError(widgetId, null);
-    return true;
+    return body;
   } catch (err) {
     showToast(`通信エラー: ${err}`, true);
     setWidgetError(widgetId, String(err));
-    return false;
+    return null;
   }
+}
+
+// Returns true/false so callers that need to know the outcome (e.g.
+// DigitInput reverting to its last confirmed value on rejection) can react;
+// callWidget itself just fires and forgets for widgets that don't need to.
+async function callWidgetForResult(widgetId, value) {
+  return (await postWidgetCall(widgetId, { value })) !== null;
 }
 
 async function callWidget(widgetId, value) {

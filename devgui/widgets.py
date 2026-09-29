@@ -115,6 +115,84 @@ class Toggle(Widget):
             raise TypeError(f"Toggle '{self.label}': off_call must be callable or None")
 
 
+VOLTAGE_UNITS = {"V": 1.0, "mV": 1e-3, "uV": 1e-6}
+CURRENT_UNITS = {"A": 1.0, "mA": 1e-3, "uA": 1e-6, "nA": 1e-9}
+
+
+@dataclass
+class SourceMeasure(Widget):
+    """One composite panel for a voltage-source/current-measure instrument
+    (a Keithley-style source meter), since its controls depend on each
+    other in ways separate widgets can't express: "meas"/"sweep" are only
+    enabled while the output is on, and a measurement updates both the
+    voltage entry and the read-only current field. See docs/design.md
+    section 4.3.
+
+    - `call(volt)` sets the source voltage; `output(bool)` switches the
+      output; `meas()` / `sweep(vstart, vend, vstep)` run a single
+      measurement / an I-V sweep; `get()` then returns the result as
+      [current, voltage, ...] (meas) or rows of that (sweep) - anything
+      past the first two columns is ignored.
+    - "meas" runs call(entry) -> meas() -> get() as one bus job.
+    - A device method returning exactly `False` is treated as a failure;
+      `message()`, if given (e.g. finerdev's `get_message`), is then called
+      for the reason.
+    - `voltage_unit`/`current_unit` ("V"/"mV"/"uV", "A"/"mA"/"uA"/"nA")
+      are what the operator sees and types: the voltage entry, sweep
+      parameters, current field and plot axes. Device methods always get
+      and return SI (V, A); devgui converts in between (e.g. 2 mV typed
+      -> setV(0.002)).
+    - min/max/step/sweep_default are in `voltage_unit`, and min/max are
+      also checked server-side.
+    """
+
+    output: Callable[[bool], Any] = field(kw_only=True)
+    meas: Callable[[], Any] = field(kw_only=True)
+    sweep: Callable[[float, float, float], Any] = field(kw_only=True)
+    get: Callable[[], Any] = field(kw_only=True)
+    message: Callable[[], Any] | None = field(default=None, kw_only=True)
+    min: float | None = field(default=None, kw_only=True)
+    max: float | None = field(default=None, kw_only=True)
+    step: float | None = field(default=None, kw_only=True)
+    sweep_default: tuple[float, float, float] = field(default=(0.0, 0.0, 0.0), kw_only=True)
+    voltage_unit: str = field(default="V", kw_only=True)
+    current_unit: str = field(default="A", kw_only=True)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        for name in ("output", "meas", "sweep", "get"):
+            if not callable(getattr(self, name)):
+                raise TypeError(f"SourceMeasure '{self.label}': {name} must be callable")
+        if self.message is not None and not callable(self.message):
+            raise TypeError(f"SourceMeasure '{self.label}': message must be callable or None")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError(
+                f"SourceMeasure '{self.label}': min ({self.min}) must be <= max ({self.max})"
+            )
+        if self.voltage_unit not in VOLTAGE_UNITS:
+            raise ValueError(
+                f"SourceMeasure '{self.label}': voltage_unit must be one of {list(VOLTAGE_UNITS)}"
+            )
+        if self.current_unit not in CURRENT_UNITS:
+            raise ValueError(
+                f"SourceMeasure '{self.label}': current_unit must be one of {list(CURRENT_UNITS)}"
+            )
+        if len(self.sweep_default) != 3:
+            raise ValueError(
+                f"SourceMeasure '{self.label}': sweep_default must be (vstart, vend, vstep)"
+            )
+
+    @property
+    def voltage_scale(self) -> float:
+        """Volts per `voltage_unit`."""
+        return VOLTAGE_UNITS[self.voltage_unit]
+
+    @property
+    def current_scale(self) -> float:
+        """Amperes per `current_unit`."""
+        return CURRENT_UNITS[self.current_unit]
+
+
 @dataclass
 class Select(Widget):
     options: Sequence[Any] | dict[str, Any] = field(default_factory=list)

@@ -20,7 +20,7 @@ Run with:
     python -m devgui --layout examples/layout_example.py
 """
 
-from devgui import Category, Device, DigitInput, Display, NumberInput, Select, Toggle
+from devgui import Category, Device, DigitInput, Display, NumberInput, SourceMeasure, Toggle
 from finerdev.loatt import loatt
 from finerdev.multiplier import mp
 from finerdev.sourcemeter import SourceMeter2400, SourceMeter2450
@@ -58,10 +58,30 @@ multiplier, multiplier_repr = build(mp, addr="finer-mp")
 
 
 def source_meter_widgets(dev):
+    # One composite widget: "meas" is setV -> meas -> get and "sweep" is
+    # measIV -> get, both only while the output is on; get() returns
+    # [current, voltage, ...] (or rows of that after measIV). No polled
+    # readback Display - get() only ever returns the last measurement.
+    # get_message() supplies the reason when a finerdev method returns
+    # False. The panel works in mV/mA; devgui converts to the V/A finerdev
+    # takes and returns (2 mV typed -> setV(0.002)). max=5 mV matches
+    # finerdev's own setV/measIV limit.
     return [
-        NumberInput("電圧設定", call=dev.setV, unit="V", min=0, max=0.005, step=0.0001),
-        Toggle("出力ON/OFF", call=dev.output),
-        Display("読み出し", call=dev.get, poll=2.0),
+        SourceMeasure(
+            "SourceMeter",
+            call=dev.setV,
+            output=dev.output,
+            meas=dev.meas,
+            sweep=dev.measIV,
+            get=dev.get,
+            message=dev.get_message,
+            voltage_unit="mV",
+            current_unit="mA",
+            min=0,
+            max=5,
+            step=0.1,
+            sweep_default=(0.0, 5.0, 0.1),
+        ),
     ]
 
 

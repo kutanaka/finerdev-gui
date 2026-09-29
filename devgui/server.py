@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import secrets
 import socket
 import threading
@@ -24,6 +25,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import (
     Body,
@@ -31,11 +33,13 @@ from fastapi import (
     Header,
     HTTPException,
     Request,
+    Response,
     WebSocket,
     WebSocketDisconnect,
 )
 from fastapi.staticfiles import StaticFiles
 
+from devgui.ivplot import render_iv_pdf
 from devgui.runtime.bus import BusManager, Priority
 from devgui.runtime.devices import DeviceManager, DeviceNotInstalledError, DeviceRuntime
 from devgui.runtime.operator import (
@@ -57,6 +61,7 @@ from devgui.widgets import (
     Display,
     NumberInput,
     Select,
+    SourceMeasure,
     TextInput,
     Toggle,
     Widget,
@@ -88,7 +93,7 @@ class _RevalidateStaticFiles(StaticFiles):
         return response
 
 
-def _serialize_widget(widget: Widget) -> dict[str, Any]:
+def _serialize_widget(widget: Widget, widget_states: dict[str, Any]) -> dict[str, Any]:
     base: dict[str, Any] = {"id": widget.id, "type": type(widget).__name__, "label": widget.label}
     if isinstance(widget, Button):
         base["confirm"] = widget.confirm
@@ -108,6 +113,16 @@ def _serialize_widget(widget: Widget) -> dict[str, Any]:
         base["default"] = widget.default
     elif isinstance(widget, Select):
         base["options"] = list(widget.options.keys())
+    elif isinstance(widget, SourceMeasure):
+        base.update(
+            min=widget.min,
+            max=widget.max,
+            step=widget.step,
+            sweep_default=list(widget.sweep_default),
+            voltage_unit=widget.voltage_unit,
+            current_unit=widget.current_unit,
+            state=widget_states.get(widget.id),
+        )
     elif isinstance(widget, TextInput):
         base["default"] = widget.default
     elif isinstance(widget, Display):
@@ -120,7 +135,9 @@ def _serialize_widget(widget: Widget) -> dict[str, Any]:
     return base
 
 
-def _serialize_device(device: Device, runtime: DeviceRuntime) -> dict[str, Any]:
+def _serialize_device(
+    device: Device, runtime: DeviceRuntime, widget_states: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "name": device.name,
         "bus": device.bus,
@@ -128,12 +145,15 @@ def _serialize_device(device: Device, runtime: DeviceRuntime) -> dict[str, Any]:
         "error_message": runtime.error_message,
         "can_open": runtime.has_open(),
         "can_close": runtime.has_close(),
-        "widgets": [_serialize_widget(w) for w in device.widgets],
+        "widgets": [_serialize_widget(w, widget_states) for w in device.widgets],
     }
 
 
 def _serialize_layout(
-    layout: list[Category], device_manager: DeviceManager, title: str
+    layout: list[Category],
+    device_manager: DeviceManager,
+    title: str,
+    widget_states: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "title": title,
@@ -141,7 +161,7 @@ def _serialize_layout(
             {
                 "title": category.title,
                 "devices": [
-                    _serialize_device(device, device_manager.get(device.name))
+                    _serialize_device(device, device_manager.get(device.name), widget_states)
                     for device in category.devices
                 ],
             }
@@ -194,6 +214,128 @@ def _invoke_widget(widget: Widget, raw_value: Any) -> tuple[Any, tuple[Any, ...]
     raise TypeError(f"unsupported widget type {type(widget).__name__}")
 
 
+class DeviceCallFailed(Exception):
+    """A device method signalled failure by returning exactly `False`
+    (finerdev's convention) rather than raising."""
+
+
+def _iv_rows(raw: Any) -> list[list[float]]:
+    """SourceMeasure's get() result -> [[current, voltage], ...]. Accepts
+    one row ([I, V, ...]) or several (rows of that), as a list or a numpy
+    array; columns past the first two are dropped (section 4.3)."""
+    data = raw.tolist() if hasattr(raw, "tolist") else raw
+    if not isinstance(data, (list, tuple)) or not data:
+        raise ValueError(f"get() returned {raw!r}; expected [current, voltage, ...]")
+    if not isinstance(data[0], (list, tuple)):
+        data = [data]
+    rows = []
+    for row in data:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            raise ValueError(f"get() row {row!r} has fewer than 2 elements [current, voltage]")
+        current, voltage = float(row[0]), float(row[1])
+        if not (math.isfinite(current) and math.isfinite(voltage)):
+            raise ValueError(f"get() row {row!r} is not finite")
+        rows.append([current, voltage])
+    return rows
+
+
+def _short_repr(value: Any) -> str:
+    """repr() for the command log, collapsing a multi-row sweep result
+    (which could be hundreds of lines) to its shape."""
+    data = value.tolist() if hasattr(value, "tolist") else value
+    if isinstance(data, list) and len(data) > 3 and isinstance(data[0], list):
+        return f"<{len(data)} rows x {len(data[0])}>"
+    return repr(value)
+
+
+def _check_voltage(widget: SourceMeasure, name: str, raw: Any) -> float:
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError(f"{name} {raw!r} is not a number")
+    if widget.min is not None and value < widget.min:
+        raise ValueError(f"{name} {value} is below min {widget.min}")
+    if widget.max is not None and value > widget.max:
+        raise ValueError(f"{name} {value} is above max {widget.max}")
+    return value
+
+
+def _scaled(value: float, factor: float) -> float:
+    """value * factor, rounded to 12 significant digits so a unit
+    conversion doesn't leave float noise (e.g. 0.30000000000000004) in
+    the device call, the command log or the display."""
+    return float(f"{value * factor:.12g}")
+
+
+def _run_source_measure(
+    widget: SourceMeasure, action: str, raw_value: Any, steps: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Runs one SourceMeasure action on the bus thread. Every device method
+    actually called is appended to `steps` as it happens - including a
+    failing one - so the caller can log each real call (section 8.2) even
+    when a later step raises. Returns the state fields to update."""
+
+    def step(fn: Any, *args: Any, check: bool = True) -> Any:
+        record: dict[str, Any] = {"name": getattr(fn, "__name__", "call"), "args": args}
+        steps.append(record)
+        try:
+            result = fn(*args)
+        except Exception as exc:
+            record["exc"] = exc
+            raise
+        record["result"] = result
+        if check and result is False:
+            record["failed"] = True
+            reason = step(widget.message, check=False) if widget.message is not None else None
+            detail = f": {reason}" if reason else ""
+            raise DeviceCallFailed(f"{record['name']}() returned False{detail}")
+        return result
+
+    # Values from/to the client are in widget.voltage_unit/current_unit;
+    # device methods take and return V/A.
+    to_volts = widget.voltage_scale
+
+    def to_display(rows: list[list[float]]) -> list[list[float]]:
+        return [
+            [_scaled(i, 1 / widget.current_scale), _scaled(v, 1 / widget.voltage_scale)]
+            for i, v in rows
+        ]
+
+    if action == "output":
+        value = bool(raw_value)
+        step(widget.output, value)
+        return {"output": value}
+    if action == "meas":
+        volt = _check_voltage(widget, "voltage", raw_value)
+        step(widget.call, _scaled(volt, to_volts))
+        step(widget.meas)
+        current, voltage = to_display(_iv_rows(step(widget.get, check=False)))[-1]
+        return {"current": current, "voltage": voltage}
+    if action == "sweep":
+        if not isinstance(raw_value, dict):
+            raise ValueError("sweep needs {vstart, vend, vstep}")
+        vstart = _check_voltage(widget, "vstart", raw_value.get("vstart"))
+        vend = _check_voltage(widget, "vend", raw_value.get("vend"))
+        vstep = float(raw_value.get("vstep"))
+        if not (math.isfinite(vstep) and vstep > 0):
+            raise ValueError(f"vstep {raw_value.get('vstep')!r} must be > 0")
+        if vend < vstart:
+            raise ValueError(f"vend {vend} is below vstart {vstart}")
+        step(
+            widget.sweep,
+            _scaled(vstart, to_volts),
+            _scaled(vend, to_volts),
+            _scaled(vstep, to_volts),
+        )
+        rows = to_display(_iv_rows(step(widget.get, check=False)))
+        current, voltage = rows[-1]
+        return {
+            "current": current,
+            "voltage": voltage,
+            "sweep": {"rows": rows, "t": _now_iso(), "params": [vstart, vend, vstep]},
+        }
+    raise ValueError(f"unknown SourceMeasure action {action!r}")
+
+
 def _lookup_hostname_background(ip: str, cache: dict[str, str | None]) -> None:
     # A real daemon thread, not a ThreadPoolExecutor/asyncio.to_thread worker:
     # socket.gethostbyaddr() has no way to time out, and both the default
@@ -244,6 +386,14 @@ def create_app(
         for widget in device.widgets
     }
     display_ids = [wid for wid, (_, w) in widgets_by_id.items() if isinstance(w, Display)]
+    # Server-side, so every client (and a reload) sees the same output
+    # switch, last reading and last sweep - and so meas/sweep can be
+    # refused while the output is off regardless of what a client shows.
+    source_measure_states: dict[str, dict[str, Any]] = {
+        wid: {"output": False, "voltage": None, "current": None, "sweep": None}
+        for wid, (_, w) in widgets_by_id.items()
+        if isinstance(w, SourceMeasure)
+    }
 
     connections: set[WebSocket] = set()
     connections_by_client_id: dict[str, WebSocket] = {}
@@ -373,11 +523,21 @@ def create_app(
             if isinstance(widget, (DigitInput, NumberInput)) and widget.get is not None:
                 _refresh_gettable_widget(device, widget)
 
+    def _reset_source_measure_outputs(device: Device) -> None:
+        """A source meter's open() resets the instrument (*RST), which
+        turns its output off - mirror that instead of showing a stale ON."""
+        for widget in device.widgets:
+            state = source_measure_states.get(widget.id)
+            if state is not None and state["output"]:
+                state["output"] = False
+                _broadcast_widget_value(widget.id, dict(state))
+
     def _track_open(device: Device, future: Future) -> None:
         def on_done(f: Future) -> None:
             _broadcast_device_state(device.name)
             _log_call_result(device.name, f"{device.name}.open()", f)
             if f.exception() is None:
+                _reset_source_measure_outputs(device)
                 _read_gettable_widgets_for_device(device)
 
         future.add_done_callback(on_done)
@@ -468,7 +628,7 @@ def create_app(
 
     @app.get("/api/layout")
     async def api_layout() -> dict[str, Any]:
-        return _serialize_layout(layout, device_manager, title)
+        return _serialize_layout(layout, device_manager, title, source_measure_states)
 
     @app.post("/api/call/{widget_id}")
     async def api_call(
@@ -484,6 +644,8 @@ def create_app(
         device, widget = entry
         raw_value = body.get("value")
         who = client_display_names.get(x_client_id, x_client_id or "unknown")
+        if isinstance(widget, SourceMeasure):
+            return await _call_source_measure(device, widget, body.get("action"), raw_value, who)
         # Approximate: for a plain widget this is exactly the method that
         # runs; for a dual-call Toggle it's only the "on" side, since which
         # of call/off_call actually gets invoked isn't known until inside
@@ -516,6 +678,78 @@ def create_app(
         if isinstance(widget, Display):
             return {"ok": True, "result": result}
         return {"ok": True}
+
+    async def _call_source_measure(
+        device: Device, widget: SourceMeasure, action: Any, raw_value: Any, who: str
+    ) -> dict[str, Any]:
+        state = source_measure_states[widget.id]
+        if action in ("meas", "sweep") and not state["output"]:
+            return {"ok": False, "error": f"{action}: output is off"}
+        steps: list[dict[str, Any]] = []
+        future = bus_manager.submit(
+            device.bus,
+            lambda: _run_source_measure(widget, action, raw_value, steps),
+            priority=Priority.HIGH,
+        )
+        try:
+            update = await asyncio.wrap_future(future)
+            error = None
+        except Exception as exc:
+            update = None
+            error = exc
+        for record in steps:
+            args_text = ", ".join(repr(a) for a in record["args"])
+            call_text = f"{device.name}.{record['name']}({args_text})"
+            if "exc" in record:
+                exc = record["exc"]
+                _log_command(device.name, f"{call_text}  # {type(exc).__name__}: {exc}", error=True)
+            elif "result" in record:
+                _log_command(
+                    device.name,
+                    f"{call_text} -> {_short_repr(record['result'])}",
+                    error=record.get("failed", False),
+                )
+        if error is not None:
+            if not isinstance(error, DeviceCallFailed) and (not steps or "exc" not in steps[-1]):
+                # Rejected before/after any device call (validation, or an
+                # unusable get() result) - log that too, not just the calls.
+                _log_command(
+                    device.name,
+                    f"{device.name} {action}({raw_value!r})  # {type(error).__name__}: {error}",
+                    error=True,
+                )
+            logger.warning("%s %s by %s value=%r failed: %s", widget.id, action, who, raw_value, error)
+            return {"ok": False, "error": f"{type(error).__name__}: {error}"}
+        logger.info("%s %s by %s value=%r -> ok", widget.id, action, who, raw_value)
+        state.update(update)
+        _broadcast_widget_value(widget.id, dict(state))
+        return {"ok": True, "state": dict(state)}
+
+    @app.get("/api/widgets/{widget_id}/iv.pdf")
+    async def api_iv_pdf(widget_id: str) -> Response:
+        state = source_measure_states.get(widget_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail=f"unknown SourceMeasure '{widget_id}'")
+        sweep = state["sweep"]
+        if sweep is None:
+            raise HTTPException(status_code=404, detail="no sweep data yet")
+        device, widget = widgets_by_id[widget_id]
+        stamp = sweep["t"][:19]
+        vstart, vend, vstep = sweep["params"]
+        vu = widget.voltage_unit
+        pdf = render_iv_pdf(
+            sweep["rows"],
+            f"{device.name}  I-V sweep",
+            f"{stamp.replace('T', ' ')}   vstart={vstart:g} {vu}, vend={vend:g} {vu}, vstep={vstep:g} {vu}",
+            voltage_unit=vu,
+            current_unit=widget.current_unit,
+        )
+        filename = f"{device.name}_IV_{stamp.replace(':', '').replace('-', '')}.pdf"
+        return Response(
+            pdf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+        )
 
     @app.post("/api/devices/{name}/open")
     async def api_device_open(
