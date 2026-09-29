@@ -564,6 +564,8 @@ def test_websocket_hello_and_snapshot(harness):
                 "holder_display_name": None,
                 "is_held": False,
                 "request_pending": False,
+                "external": False,
+                "blocked": False,
             }
 
 
@@ -657,6 +659,8 @@ def test_websocket_receives_operator_state_broadcast_on_acquire_and_release(harn
                 "holder_display_name": None,
                 "is_held": False,
                 "request_pending": False,
+                "external": False,
+                "blocked": False,
             }
 
 

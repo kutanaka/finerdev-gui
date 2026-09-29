@@ -48,6 +48,25 @@ class TakeoverNotFoundError(OperatorError):
     """cancel_request()/respond_to_request() referenced a request that isn't the pending one."""
 
 
+class OperatorBlockedError(OperatorError):
+    """A GUI acquire/request while an external holder has blocked the right
+    (`priority('get', block=True)`, section 9.5)."""
+
+
+class NotExternallyHeldError(OperatorError):
+    """external_release() while the right isn't held by an external holder."""
+
+
+@dataclass
+class ForceReleased:
+    """force_release() result: the GUI client that lost the right (None if
+    it was free or held externally) and a pending takeover request that
+    was discarded along with it."""
+
+    old_holder_client_id: str | None
+    dropped_request: PendingRequest | None
+
+
 @dataclass
 class PendingRequest:
     request_id: str
@@ -75,6 +94,18 @@ class RequestRejected:
     requester_display_name: str
 
 
+@dataclass
+class ExternalAcquired:
+    """external_acquire() succeeded. `old_holder_client_id` is the GUI
+    client that lost the right to a forced acquire (None if it was free
+    or already held externally); `dropped_request` is a pending takeover
+    request that the forced acquire discarded."""
+
+    token: str
+    old_holder_client_id: str | None
+    dropped_request: PendingRequest | None
+
+
 class OperatorManager:
     def __init__(
         self,
@@ -99,6 +130,12 @@ class OperatorManager:
         self._disconnected_at: float | None = None
         self._pending_request: PendingRequest | None = None
         self._cooldowns: dict[tuple[str, str], float] = {}
+        # Held by an external program (section 9.5) rather than a browser:
+        # no client_id/WebSocket, so no idle timeout or disconnect grace -
+        # only external_release() (or a GUI takeover, unless blocked)
+        # ends it.
+        self.external = False
+        self.blocked = False
 
     @property
     def is_held(self) -> bool:
@@ -117,6 +154,8 @@ class OperatorManager:
         presenting the token it kept in sessionStorage.
         """
         with self._lock:
+            if self.blocked:
+                raise OperatorBlockedError("operator right is blocked by an external program")
             if self.token is not None:
                 if presented_token is not None and secrets.compare_digest(
                     self.token, presented_token
@@ -145,6 +184,57 @@ class OperatorManager:
                 return self._transfer_to_requester_locked(self._pending_request)
             self._clear_locked()
             return None
+
+    def external_acquire(self, display_name: str, *, block: bool, force: bool) -> ExternalAcquired:
+        """Take the right for an external program (section 9.5).
+
+        - force=False: only if the right is free (or already held
+          externally, which just updates the name/block flag).
+        - force=True: unconditionally, revoking a GUI holder and dropping
+          any pending takeover request.
+        - block=True: until external_release(), every GUI acquire/request
+          is refused immediately (OperatorBlockedError).
+        """
+        with self._lock:
+            if self.token is not None and not self.external and not force:
+                raise OperatorHeldError("operator right is held by a GUI client")
+            old_client_id = None if self.external else self.client_id
+            dropped = None
+            if force or block:
+                dropped, self._pending_request = self._pending_request, None
+            if not self.external or self.token is None:
+                self.token = secrets.token_urlsafe(32)
+            self.client_id = None
+            self.display_name = display_name
+            self._last_activity = None
+            self._disconnected_at = None
+            self.external = True
+            self.blocked = block
+            return ExternalAcquired(self.token, old_client_id, dropped)
+
+    def external_release(self, token: str | None) -> TransferResult | None:
+        """End an external hold (and any block) - only for the holder that
+        got it (`token` from external_acquire). As with release(), a
+        pending takeover request gets the right instead of freeing it."""
+        with self._lock:
+            if not self.external:
+                raise NotExternallyHeldError("operator right is not held externally")
+            if token is None or not secrets.compare_digest(self.token, token):
+                raise InvalidOperatorTokenError("not the external holder that got the right")
+            if self._pending_request is not None:
+                return self._transfer_to_requester_locked(self._pending_request)
+            self._clear_locked()
+            return None
+
+    def force_release(self) -> ForceReleased:
+        """Free the right unconditionally, whoever holds it (a GUI client or
+        any external holder), lifting any block and discarding a pending
+        takeover request. A no-op when it's already free."""
+        with self._lock:
+            old_client_id = None if self.external else self.client_id
+            dropped, self._pending_request = self._pending_request, None
+            self._clear_locked()
+            return ForceReleased(old_client_id, dropped)
 
     def is_holder(self, token: str | None) -> bool:
         if token is None:
@@ -191,6 +281,8 @@ class OperatorManager:
                 "holder_display_name": self.display_name,
                 "is_held": self.token is not None,
                 "request_pending": self._pending_request is not None,
+                "external": self.external,
+                "blocked": self.blocked,
             }
 
     def request_takeover(
@@ -201,6 +293,8 @@ class OperatorManager:
         9.4 item 1) - this method only handles the "someone already holds
         it" negotiation."""
         with self._lock:
+            if self.blocked:
+                raise OperatorBlockedError("operator right is blocked by an external program")
             if self._pending_request is not None:
                 raise TakeoverInProgressError("another request is already being processed")
 
@@ -284,6 +378,8 @@ class OperatorManager:
         self._last_activity = self._clock()
         self._disconnected_at = None
         self._pending_request = None
+        self.external = False
+        self.blocked = False
         return TransferResult(
             new_token=new_token,
             requester_client_id=request.requester_client_id,
@@ -302,3 +398,5 @@ class OperatorManager:
         self.display_name = None
         self._last_activity = None
         self._disconnected_at = None
+        self.external = False
+        self.blocked = False

@@ -42,6 +42,8 @@ def test_acquire_when_free_returns_token(manager):
         "holder_display_name": "Alice (1.2.3.4)",
         "is_held": True,
         "request_pending": False,
+        "external": False,
+        "blocked": False,
     }
 
 
@@ -59,6 +61,8 @@ def test_release_clears_holder(manager):
         "holder_display_name": None,
         "is_held": False,
         "request_pending": False,
+        "external": False,
+        "blocked": False,
     }
 
 

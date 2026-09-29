@@ -24,6 +24,7 @@ Run with:
 """
 
 import inspect
+import time
 
 import numpy as np
 
@@ -70,6 +71,7 @@ class _SourceMeterDummy(_Connection):
 
     def measIV(self, vstart, vend, vstep):
         volts = np.arange(vstart, vend + vstep / 2, vstep)
+        time.sleep(min(10.0, 0.2 * len(volts)))  # a real sweep takes ~10 s
         self.val = np.array([[_dummy_current(v), v, 0.0, 0.0, 0.0] for v in volts])
         return True
 

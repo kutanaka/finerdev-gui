@@ -53,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         operator_takeover_wait=settings.takeover_wait,
         operator_takeover_cooldown=settings.takeover_cooldown,
         title=settings.title,
+        priority_hosts=settings.priority_hosts,
     )
 
     uvicorn.run(app, host=settings.host, port=settings.port)

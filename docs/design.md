@@ -156,7 +156,7 @@ layout = [
 - 「電流」表示欄（ユーザーは編集不可）。
 - 「出力ON/OFF」スイッチ: `output(bool)` を呼ぶ。
 - 「sweep」: vstart / vend / vstep の入力欄と「sweep」ボタン。`sweep(vstart, vend, vstep)` → `get()` を実行する。
-- 「I-V」グラフ（横軸 電圧、縦軸 電流）と「PDF」ボタン（最後のsweepのグラフをPDFでダウンロード。操作権不要）。
+- 「I-V」グラフ（横軸 電圧、縦軸 電流）と「PDF」ボタン。実機のsweepは10秒程度かかるため、実行中（`meas`/`sweep` の実行状態もサーバー側で保持し全クライアントに配信する）はグラフ上に「sweep in progress... N s」と経過秒数を重ねて表示し、パネルの操作を無効にする。PDFボタンは最後のsweepのグラフをPDFでダウンロードする（操作権不要）。
 - `get()` の戻り値は `[電流, 電圧, ...]`（meas）またはその行の並び（sweep、行数不定）。list でも numpy 配列でもよく、3列目以降は無視する。meas では唯一の行、sweep では最後の行を最新の電流・電圧として電流欄と電圧欄（確定値）に反映する。
 - 「meas」「sweep」は出力ONの間だけ有効（サーバー側でも拒否する）。電圧・vstart・vend は min/max をサーバー側でも検証し、vstep > 0、vstart <= vend も検証する。
 - 各デバイスメソッドが厳密に `False` を返した場合は失敗として扱う（finerdevの慣習）。`message`（例: finerdevの `get_message`）を指定すると、そのとき理由の取得に呼ぶ。
@@ -261,6 +261,8 @@ layout = [
 | POST | `/api/operator/request` | 強制取得の要求 | — |
 | POST | `/api/operator/request/{id}/cancel` | 要求の取り消し（要求者のみ） | — |
 | POST | `/api/operator/request/{id}/respond` | 許可/拒否。body: `{"accept": bool}` | 必要（保持者） |
+| POST | `/api/priority/get` | 外部プログラムによる取得（9.5）。body: `{"block", "force", "name"}` | `priority_hosts` から |
+| POST | `/api/priority/release` | 外部保持の解放とブロック解除。body: `{"token", "force"}`（9.5） | `priority_hosts` から |
 
 - 操作権のない操作系呼び出しは `403` を返す。
 - `/api/call` は実行完了まで待ってから応答する。例外時は `{"ok": false, "error": "..."}` を返す。
@@ -351,6 +353,33 @@ layout = [
 4. 移譲の瞬間に、旧保持者の操作で既に実行中・キュー投入済みのものは最後まで実行する。移譲後に届いた旧保持者の操作は `403` で拒否する。
 5. 保持者が要求処理中に自ら解放した場合は、そのまま要求者に付与する。
 
+要求者の待機表示には、応答待ち時間（`takeover_wait`）のカウントダウンを表示する（`request` の応答に `wait_seconds` を含める）。
+
+### 9.5 外部プログラムからの取得とブロック
+
+測定スクリプトなど、GUIの外のプログラムが操作権を取得・ブロックできる。クライアントは標準ライブラリのみの `devgui.priority` モジュール:
+
+```python
+from devgui.priority import priority
+
+priority("get", block=True, force=True, name="IV測定スクリプト")
+try:
+    ...
+finally:
+    priority("release")
+```
+
+シェルからは `python -m devgui.priority get --block --force` / `python -m devgui.priority release --force`（スクリプト異常終了後の解除にも使う）。シェルのコマンドは毎回別プロセスのため、`--force` なしの `release` には `get` が表示したトークンを `--token` で渡す。
+
+- `force=True`: 誰が保持していても無条件で即時取得する。GUIの旧保持者には `operator_revoked`（「操作権が〇〇に強制取得されました」）を送り、処理中の強制取得要求は破棄して要求者に `takeover_result: rejected` を送る。`force=False` では、GUIのクライアントが保持中なら `409` で失敗する（空き、または既に外部保持中なら取得できる）。
+- `block=True`: `release` するまで、GUIからの `acquire` / `request` をすべて即時 `423` で却下する。画面上部には「〇〇 (外部) [ブロック中]」と表示し、「操作権を要求」ボタンを無効にする。
+- `block=False` の外部保持は、GUIからの `request` に応答する者がいないため、通常どおり待機時間の経過後に要求者へ移る。
+- 外部保持にはWebSocketがないため、無操作タイムアウト・切断猶予による自動解放はない。`release`（ブロックも解除）でのみ終わる。
+- `release`（`force=False`）: `get` した主体のみが解放できる。`get` の応答のトークンで判定し、`devgui.priority` は同じプロセス内の直前の `get` のトークンを自動で送る（`token=` で明示も可）。トークンが違えば `403`、外部保持中でなければ `409`。強制取得要求が処理中なら、GUIの `release` と同様に要求者へ移譲する。
+- `release`（`force=True`）: 誰が保持していても（GUIのクライアント、`get` した主体とは別の外部プログラムを含む）無条件で即時解放し、ブロックも解除する。GUIの旧保持者には `operator_revoked`（「操作権が外部から強制解放されました」）を送り、処理中の強制取得要求は破棄して要求者に `takeover_result: rejected` を送る。空いているときは何もせず成功する。
+- REST: `POST /api/priority/get`（body: `{"block": bool, "force": bool, "name": str}`、応答にトークン）、`POST /api/priority/release`（body: `{"token": str, "force": bool}`）。設定 `priority_hosts`（既定はループバックのみ）に含まれる接続元以外からは `403`。
+- 外部プログラムが実機に直接アクセスする場合でも、devgui側のDisplayのポーリングや接続時の `get` は止まらない（操作権はGUI利用者の操作を止めるだけ）。
+
 ---
 
 ## 10. エラー処理とログ
@@ -372,7 +401,8 @@ layout = [
 - パネルヘッダー: デバイス名、状態表示（色付きバッジ）、接続・切断ボタン（open/closeがある場合）。`not_installed` はグレーのバッジ（例:「未実装」）で表示し、接続・切断ボタンは出さない。
 - パネル本体: 部品を定義順に縦に並べる。
 - `Toggle` は左右にスライドしてon/offを選ぶスイッチの外観で表示する（チェックボックスではない）。「OFF スイッチ ON」の順でラベルを添え、現在選ばれている側の文字を強調する。
-- ダイアログ: 強制取得要求（保持者側、カウントダウン付き）、待機表示（要求者側）、`confirm=True` のボタン確認。
+- ダイアログ: 強制取得要求（保持者側、カウントダウン付き）、待機表示（要求者側、カウントダウン付き）、`confirm=True` のボタン確認。
+- エラー表示欄（パネル単位・部品単位）は、エラーがないときも固定の1行分の高さで確保しておき、エラーの表示・消去でパネルの大きさが変わらないようにする。1行に収まらないメッセージは末尾を「…」で省略し、全文はマウスオーバーで表示する（トーストとコマンドログにも全文が出る）。
 - 画面最下部: 操作コマンドログ（8.2）の固定表示エリア。タブ切り替えの影響を受けない。
 - WebSocket切断時は画面上に明示し、自動で再接続を試みる（指数バックオフ）。再接続後は `snapshot` で状態を復元する。
 
@@ -392,6 +422,7 @@ layout = [
 | `takeover_wait` | 10秒 | 強制取得の応答待ち時間 |
 | `takeover_cooldown` | 30秒 | 拒否後の再要求禁止時間 |
 | `slow_call_warning` | 30秒 | 長時間呼び出しの警告閾値 |
+| `priority_hosts` | `("127.0.0.1", "::1")` | 外部取得API（9.5）を許可する接続元 |
 
 ---
 

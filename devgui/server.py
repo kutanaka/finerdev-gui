@@ -44,6 +44,8 @@ from devgui.runtime.bus import BusManager, Priority
 from devgui.runtime.devices import DeviceManager, DeviceNotInstalledError, DeviceRuntime
 from devgui.runtime.operator import (
     InvalidOperatorTokenError,
+    NotExternallyHeldError,
+    OperatorBlockedError,
     OperatorHeldError,
     OperatorManager,
     RequestRejected,
@@ -378,6 +380,7 @@ def create_app(
     operator_takeover_wait: float = 10.0,
     operator_takeover_cooldown: float = 30.0,
     title: str = "devgui",
+    priority_hosts: tuple[str, ...] = ("127.0.0.1", "::1"),
 ) -> FastAPI:
     widgets_by_id: dict[str, tuple[Device, Widget]] = {
         widget.id: (device, widget)
@@ -390,7 +393,7 @@ def create_app(
     # switch, last reading and last sweep - and so meas/sweep can be
     # refused while the output is off regardless of what a client shows.
     source_measure_states: dict[str, dict[str, Any]] = {
-        wid: {"output": False, "voltage": None, "current": None, "sweep": None}
+        wid: {"output": False, "voltage": None, "current": None, "sweep": None, "running": None}
         for wid, (_, w) in widgets_by_id.items()
         if isinstance(w, SourceMeasure)
     }
@@ -683,9 +686,15 @@ def create_app(
         device: Device, widget: SourceMeasure, action: Any, raw_value: Any, who: str
     ) -> dict[str, Any]:
         state = source_measure_states[widget.id]
+        if state["running"]:
+            return {"ok": False, "error": f"{action}: {state['running']} in progress"}
         if action in ("meas", "sweep") and not state["output"]:
             return {"ok": False, "error": f"{action}: output is off"}
         steps: list[dict[str, Any]] = []
+        # A real sweep takes ~10 s: tell every client it's running (they
+        # show "sweep in progress" and disable the panel) until it ends.
+        state["running"] = action
+        _broadcast_widget_value(widget.id, dict(state))
         future = bus_manager.submit(
             device.bus,
             lambda: _run_source_measure(widget, action, raw_value, steps),
@@ -697,6 +706,8 @@ def create_app(
         except Exception as exc:
             update = None
             error = exc
+        finally:
+            state["running"] = None
         for record in steps:
             args_text = ", ".join(repr(a) for a in record["args"])
             call_text = f"{device.name}.{record['name']}({args_text})"
@@ -719,6 +730,7 @@ def create_app(
                     error=True,
                 )
             logger.warning("%s %s by %s value=%r failed: %s", widget.id, action, who, raw_value, error)
+            _broadcast_widget_value(widget.id, dict(state))
             return {"ok": False, "error": f"{type(error).__name__}: {error}"}
         logger.info("%s %s by %s value=%r -> ok", widget.id, action, who, raw_value)
         state.update(update)
@@ -815,6 +827,8 @@ def create_app(
             token = operator.acquire(
                 x_client_id, display_name, presented_token=x_operator_token
             )
+        except OperatorBlockedError as exc:
+            raise HTTPException(status_code=423, detail=str(exc))
         except OperatorHeldError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         _broadcast_operator_state()
@@ -860,6 +874,8 @@ def create_app(
         ip = request.client.host if request.client else "unknown"
         try:
             pending = operator.request_takeover(x_client_id, ip, display_name)
+        except OperatorBlockedError as exc:
+            raise HTTPException(status_code=423, detail=str(exc))
         except TakeoverInProgressError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         except TakeoverCooldownError as exc:
@@ -875,7 +891,12 @@ def create_app(
             },
         )
         _broadcast_operator_state()
-        return {"ok": True, "granted_immediately": False, "request_id": pending.request_id}
+        return {
+            "ok": True,
+            "granted_immediately": False,
+            "request_id": pending.request_id,
+            "wait_seconds": operator_takeover_wait,
+        }
 
     @app.post("/api/operator/request/{request_id}/cancel")
     async def api_operator_request_cancel(
@@ -916,6 +937,68 @@ def create_app(
             await _send_to_client(
                 result.requester_client_id, {"type": "takeover_result", "result": "rejected"}
             )
+            _broadcast_operator_state()
+        return {"ok": True}
+
+    # --- external control (section 9.5): devgui.priority.priority() ---
+
+    def _require_priority_host(request: Request) -> None:
+        host = request.client.host if request.client else None
+        if host not in priority_hosts:
+            raise HTTPException(status_code=403, detail=f"priority API not allowed from {host}")
+
+    @app.post("/api/priority/get")
+    async def api_priority_get(request: Request, body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        _require_priority_host(request)
+        name = str(body.get("name") or "外部プログラム")
+        block = bool(body.get("block"))
+        force = bool(body.get("force"))
+        try:
+            result = operator.external_acquire(name, block=block, force=force)
+        except OperatorHeldError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        logger.info("priority get by %s (block=%s, force=%s) -> ok", name, block, force)
+        await _send_to_client(
+            result.old_holder_client_id,
+            {"type": "operator_revoked", "reason": f"操作権が{name}に強制取得されました"},
+        )
+        if result.dropped_request is not None:
+            await _send_to_client(
+                result.dropped_request.requester_client_id,
+                {"type": "takeover_result", "result": "rejected"},
+            )
+        await _broadcast({"type": "operator_state", **operator.snapshot()})
+        return {"ok": True, "token": result.token, "blocked": block}
+
+    @app.post("/api/priority/release")
+    async def api_priority_release(
+        request: Request, body: dict[str, Any] = Body(default={})
+    ) -> dict[str, Any]:
+        _require_priority_host(request)
+        if body.get("force"):
+            forced = operator.force_release()
+            logger.info("priority release (force) -> ok")
+            await _send_to_client(
+                forced.old_holder_client_id,
+                {"type": "operator_revoked", "reason": "操作権が外部から強制解放されました"},
+            )
+            if forced.dropped_request is not None:
+                await _send_to_client(
+                    forced.dropped_request.requester_client_id,
+                    {"type": "takeover_result", "result": "rejected"},
+                )
+            _broadcast_operator_state()
+            return {"ok": True}
+        try:
+            result = operator.external_release(body.get("token"))
+        except NotExternallyHeldError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except InvalidOperatorTokenError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        logger.info("priority release -> ok")
+        if isinstance(result, TransferResult):
+            await _apply_transfer(result)
+        else:
             _broadcast_operator_state()
         return {"ok": True}
 

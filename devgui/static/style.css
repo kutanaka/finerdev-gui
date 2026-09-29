@@ -50,6 +50,7 @@ body {
 }
 
 #operator-acquire-btn,
+#operator-request-btn,
 #operator-release-btn {
   font-size: 0.8rem;
   padding: 0.25rem 0.6rem;
@@ -61,8 +62,14 @@ body {
 }
 
 #operator-acquire-btn:hover,
+#operator-request-btn:hover:not(:disabled),
 #operator-release-btn:hover {
   background: #4b5563;
+}
+
+#operator-request-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .ws-status {
@@ -180,10 +187,22 @@ body {
   background: #9ca3af;
 }
 
-.device-error {
+/* Error slots are always present with a fixed one-line height, so an
+   error appearing/clearing never resizes the panel (design.md section 11);
+   a longer message is cut with an ellipsis, full text in the tooltip. */
+.device-error,
+.widget-error {
   color: #dc2626;
+  line-height: 1.3;
+  height: 1.3em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.device-error {
   font-size: 0.85rem;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.3rem;
 }
 
 .widget {
@@ -194,7 +213,6 @@ body {
 }
 
 .widget-error {
-  color: #dc2626;
   font-size: 0.78rem;
 }
 
@@ -401,7 +419,25 @@ body {
   min-width: 0;
 }
 
+.iv-plot-wrap {
+  position: relative;
+}
+
+.iv-plot-busy {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.3rem;
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
 .iv-plot {
+  display: block;
   width: 100%;
   height: auto;
   border: 1px solid var(--border);

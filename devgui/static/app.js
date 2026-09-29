@@ -13,6 +13,7 @@ const state = {
   outgoingRequestId: null, // our own pending takeover request, if any
   incomingRequestId: null, // a pending request we (the holder) must respond to
   incomingCountdownTimer: null,
+  waitingCountdownTimer: null,
 };
 
 // name -> { panel, badge, openBtn, closeBtn, errorEl, lastState, lastError }
@@ -125,9 +126,11 @@ function renderDevicePanel(device) {
 
   panel.appendChild(header);
 
+  // Always in the layout with a fixed one-line height (design.md section
+  // 11), so an error appearing/clearing never resizes the panel; the full
+  // text of a long message is in the tooltip.
   const errorEl = document.createElement("div");
   errorEl.className = "device-error";
-  errorEl.hidden = true;
   panel.appendChild(errorEl);
 
   const body = document.createElement("div");
@@ -166,8 +169,8 @@ function applyDeviceState(name, stateValue, errorMessage) {
   el.badge.textContent = stateLabel(stateValue);
   el.badge.className = `state-badge state-${stateValue}`;
 
-  el.errorEl.hidden = !errorMessage;
   el.errorEl.textContent = errorMessage || "";
+  el.errorEl.title = errorMessage || "";
 
   updateDeviceControls(name);
 }
@@ -210,8 +213,8 @@ function setOperantWidgetsEnabled(panel, enabled) {
 function setWidgetError(widgetId, message) {
   const el = widgetErrorElements[widgetId];
   if (!el) return;
-  el.hidden = !message;
   el.textContent = message || "";
+  el.title = message || "";
 }
 
 function renderWidget(widget) {
@@ -320,9 +323,9 @@ function renderWidget(widget) {
       break;
   }
 
+  // Fixed one-line slot, like the device-level error above.
   const errorEl = document.createElement("div");
   errorEl.className = "widget-error";
-  errorEl.hidden = true;
   wrap.appendChild(errorEl);
   widgetErrorElements[widget.id] = errorEl;
 
@@ -697,12 +700,24 @@ function renderSourceMeasure(widget) {
   // --- I-V plot + PDF ---
   const plot = document.createElementNS(SVG_NS, "svg");
   plot.setAttribute("class", "iv-plot");
+  // A real sweep takes ~10 s; while one runs (on any client - it's
+  // server state) cover the plot with a progress note and elapsed time.
+  const plotBusy = document.createElement("div");
+  plotBusy.className = "iv-plot-busy";
+  plotBusy.hidden = true;
+  const plotWrap = row("iv-plot-wrap", plot, plotBusy);
+  let sweepStartedAt = null;
+  let sweepTimer = null;
+  const updateSweepBusy = () => {
+    const elapsed = Math.floor((Date.now() - sweepStartedAt) / 1000);
+    plotBusy.textContent = `sweep in progress... ${elapsed} s`;
+  };
   const plotInfo = document.createElement("span");
   plotInfo.className = "sm-plot-info";
   const pdfBtn = button("PDF", () => {
     window.location.href = `/api/widgets/${encodeURIComponent(widget.id)}/iv.pdf`;
   });
-  section("I-V", plot, row("sm-row sm-plot-footer", plotInfo, pdfBtn));
+  section("I-V", plotWrap, row("sm-row sm-plot-footer", plotInfo, pdfBtn));
 
   const voltageValid = () => voltInput.value !== "" && Number.isFinite(Number(voltInput.value));
   const isPending = () => Number(voltInput.value) !== confirmedVoltage || !voltageValid();
@@ -710,7 +725,7 @@ function renderSourceMeasure(widget) {
     Object.values(sweepInputs).every((i) => i.value !== "" && Number.isFinite(Number(i.value)));
 
   function render() {
-    const canOperate = deviceEnabled && !busy;
+    const canOperate = deviceEnabled && !busy && !smState.running;
     const measurable = canOperate && !!smState.output;
     voltInput.disabled = !canOperate;
     voltInput.classList.toggle("pending", isPending());
@@ -733,6 +748,15 @@ function renderSourceMeasure(widget) {
       voltInput.value = confirmedVoltage;
     }
     currentInput.value = next.current == null ? "" : String(Number(next.current.toPrecision(5)));
+    if (next.running === "sweep" && sweepStartedAt === null) {
+      sweepStartedAt = Date.now();
+      updateSweepBusy();
+      sweepTimer = setInterval(updateSweepBusy, 1000);
+    } else if (next.running !== "sweep" && sweepStartedAt !== null) {
+      sweepStartedAt = null;
+      clearInterval(sweepTimer);
+    }
+    plotBusy.hidden = next.running !== "sweep";
     if (next.sweep !== prev.sweep || !plot.hasChildNodes()) {
       drawIVPlot(plot, next.sweep ? next.sweep.rows : [], vUnit, iUnit);
       plotInfo.textContent = next.sweep
@@ -751,7 +775,9 @@ function renderSourceMeasure(widget) {
       applyState(body.state);
     } else {
       if (action === "meas") voltInput.value = confirmedVoltage;
-      applyState(smState); // e.g. put a rejected output switch back
+      // e.g. put a rejected output switch back; the call is over either
+      // way, even if its closing broadcast hasn't arrived yet.
+      applyState({ ...smState, running: null });
     }
   }
 
@@ -950,7 +976,7 @@ async function acquireOperator() {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      showToast(`操作権を取得できません: ${body.detail || res.status}`, true);
+      showToast(`操作権を取得できません: ${operatorErrorText(res.status, body)}`, true);
       return;
     }
     const body = await res.json();
@@ -1009,6 +1035,9 @@ function applyOperatorInfo(info) {
     statusEl.textContent = "操作権: 空き";
   } else if (state.isHolder) {
     statusEl.textContent = `操作権: ${info.holder_display_name} (自分)`;
+  } else if (info.external) {
+    // Held by an external program via devgui.priority (section 9.5).
+    statusEl.textContent = `操作権: ${info.holder_display_name} (外部)${info.blocked ? " [ブロック中]" : ""}`;
   } else {
     statusEl.textContent = `操作権: ${info.holder_display_name}`;
   }
@@ -1016,6 +1045,9 @@ function applyOperatorInfo(info) {
   acquireBtn.hidden = info.is_held;
   requestBtn.hidden = !info.is_held || state.isHolder;
   releaseBtn.hidden = !state.isHolder;
+  // A blocked right refuses every request anyway; say so up front.
+  requestBtn.disabled = !!info.blocked;
+  requestBtn.title = info.blocked ? "外部プログラムが操作権をブロックしています" : "";
 
   // request_pending is only meaningful once we know about it (snapshot and
   // operator_state both always carry it); when it's absent (a locally
@@ -1173,22 +1205,46 @@ async function requestTakeover() {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
-      showToast(`要求できません: ${body.detail || res.status}`, true);
+      showToast(`要求できません: ${operatorErrorText(res.status, body)}`, true);
       return;
     }
     if (body.granted_immediately) {
       saveOperatorToken(body.token, body.display_name);
     } else {
       state.outgoingRequestId = body.request_id;
-      document.getElementById("takeover-waiting-dialog").hidden = false;
+      showWaitingDialog(body.wait_seconds);
     }
   } catch (err) {
     showToast(`通信エラー: ${err}`, true);
   }
 }
 
+// 423 = blocked by an external program (design.md section 9.5).
+function operatorErrorText(status, body) {
+  if (status === 423) return "外部プログラムが操作権をブロックしています";
+  return body.detail || status;
+}
+
+// Counts down the holder's response time (settings.takeover_wait); at 0
+// the server hands the right over by itself within about a second.
+function showWaitingDialog(waitSeconds) {
+  let remaining = Math.ceil(waitSeconds || 0);
+  const line = document.getElementById("takeover-waiting-countdown-line");
+  const countdownEl = document.getElementById("takeover-waiting-countdown");
+  line.hidden = !waitSeconds;
+  countdownEl.textContent = remaining;
+  clearInterval(state.waitingCountdownTimer);
+  state.waitingCountdownTimer = setInterval(() => {
+    remaining -= 1;
+    countdownEl.textContent = Math.max(remaining, 0);
+    if (remaining <= 0) clearInterval(state.waitingCountdownTimer);
+  }, 1000);
+  document.getElementById("takeover-waiting-dialog").hidden = false;
+}
+
 function hideWaitingDialog() {
   state.outgoingRequestId = null;
+  clearInterval(state.waitingCountdownTimer);
   document.getElementById("takeover-waiting-dialog").hidden = true;
 }
 

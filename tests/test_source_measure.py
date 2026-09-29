@@ -142,7 +142,13 @@ def test_layout_serializes_sweep_default_and_initial_state(sm):
     widget = client.get("/api/layout").json()["categories"][0]["devices"][0]["widgets"][0]
     assert widget["type"] == "SourceMeasure"
     assert widget["sweep_default"] == [0, 0.005, 0.001]
-    assert widget["state"] == {"output": False, "voltage": None, "current": None, "sweep": None}
+    assert widget["state"] == {
+        "output": False,
+        "voltage": None,
+        "current": None,
+        "sweep": None,
+        "running": None,
+    }
 
 
 def test_meas_and_sweep_refused_while_output_off(sm):
@@ -271,3 +277,14 @@ def test_milli_units_scale_device_args_and_readings(sm_milli):
 
     # min/max are in the display unit: 5 mV is the limit, not 5 V
     assert call(client, headers, "meas", 6)["ok"] is False
+
+
+def test_running_state_is_broadcast_during_sweep_and_cleared_after(sm):
+    client, _ = sm
+    headers = operator_headers(client)
+    call(client, headers, "output", True)
+    with client.websocket_connect("/ws") as ws:
+        receive_until(ws, "snapshot")
+        call(client, headers, "sweep", {"vstart": 0, "vend": 0.002, "vstep": 0.001})
+        running = [receive_until(ws, "widget_value")["value"]["running"] for _ in range(2)]
+    assert running == ["sweep", None]
